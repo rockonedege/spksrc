@@ -1,0 +1,32 @@
+PKG_NAME = libheif
+PKG_VERS = 1.20.2
+PKG_EXT = tar.gz
+PKG_DIST_NAME = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
+PKG_DIST_SITE = https://github.com/strukturag/libheif/releases/download/v$(PKG_VERS)
+PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
+
+DEPENDS  = cross/libjpeg
+DEPENDS += cross/libpng
+DEPENDS += cross/libde265
+DEPENDS += cross/x265
+# libwebp for libsharpyuv:
+DEPENDS += cross/libwebp
+DEPENDS += cross/gdk-pixbuf
+
+# last libheif line building on GCC 8.5 era toolchains (verified);
+# newer releases need defaulted comparisons (GCC 10+)
+MIN_GCC_VERSION = 8.5
+
+HOMEPAGE = http://www.libheif.org
+COMMENT  = libheif is a ISO/IEC 23008-12:2017 HEIF file format decoder and encoder.
+LICENSE  = LGPLv3
+
+CONFIGURE_ARGS += -DWITH_EXAMPLES=OFF
+CONFIGURE_ARGS += -DBUILD_TESTING=OFF
+CONFIGURE_ARGS += -DWITH_GDK_PIXBUF=OFF
+# libde265 doesn't ship cmake config files
+CONFIGURE_ARGS += -DCMAKE_MODULE_PATH=$(abspath $(CURDIR))/cmake
+
+ADDITIONAL_CXXFLAGS = -O
+
+include ../../mk/spksrc.cross-cmake.mk

@@ -1,40 +1,45 @@
 SPK_NAME = domoticz
-SPK_VERS = 4.9700
-SPK_REV = 8
+SPK_VERS = 2026.4
+SPK_REV = 13
 SPK_ICON = src/domoticz.png
 DSM_UI_DIR = app
 
-DEPENDS = cross/busybox cross/$(SPK_NAME)
+DEPENDS = cross/domoticz
 
-# archs lacking C++11 compiler (arm5 archs, ppc archs except QorIQ)
-UNSUPPORTED_ARCHS = $(ARM5_ARCHES) powerpc ppc824x ppc853x ppc854x
+# Requires C++ compiler, supporting at least C++17 (gcc 7 or newer, i.e. DSM 7.x toolchains).
+MIN_GCC_VERSION = 7
 
-MAINTAINER = Diaoul
+MAINTAINER = SynoCommunity
 DESCRIPTION = Domoticz is a Home Automation System that lets you monitor and configure various devices like: Lights, Switches, various sensors/meters like Temperature, Rain, Wind, UV, Electra, Gas, Water and much more. Notifications/Alerts can be sent to any mobile device.
-DESCRIPTION_FRE = Domoticz est un système domotique qui vous permet de surveiller et de configurer différents périphériques tels que: Lumières, Interrupteurs, divers capteurs/compteurs  afin de surveiller température, pluie, vent, UV, électricité, gaz, eau et bien plus encore. Notifications et alertes peuvent être envoyées à n\'importe quel appareil mobile.
-ADMIN_PORT = 8084
-RELOAD_UI = yes
+DESCRIPTION_FRE = Domoticz est un système domotique qui vous permet de surveiller et de configurer différents périphériques tels que: Lumières, Interrupteurs, divers capteurs/compteurs afin de surveiller température, pluie, vent, UV, électricité, gaz, eau et bien plus encore. Notifications et alertes peuvent être envoyées à n\'importe quel appareil mobile.
 DISPLAY_NAME = Domoticz
-CHANGELOG = "Update to version 4.9700 \(includes update from python2 to python3 bindings\)"
+CHANGELOG = "1. Update domoticz to v2026.4."
 
-HOMEPAGE = http://www.domoticz.com/
+HOMEPAGE = https://www.domoticz.com/
 LICENSE  = GPLv3
 
-INSTALLER_SCRIPT = src/installer.sh
-SSS_SCRIPT       = src/dsm-control.sh
-FWPORTS          = src/${SPK_NAME}.sc
-CONF_DIR         = src/conf/
+STARTABLE = yes
+SERVICE_SETUP = src/service-setup.sh
+SERVICE_PORT = 8084
+SERVICE_PORT_TITLE = Domoticz Web UI (HTTP)
+ADMIN_PORT = $(SERVICE_PORT)
+SERVICE_USER = auto
 
-INSTALL_PREFIX = /usr/local/$(SPK_NAME)
-
+# Remove files not needed at runtime to slim down the package
+# (python bytecode/tests, terminfo, and unused boost libraries)
 POST_STRIP_TARGET = domoticz_extra_install
-
-BUSYBOX_CONFIG = usrmng
-ENV += BUSYBOX_CONFIG="$(BUSYBOX_CONFIG)"
 
 include ../../mk/spksrc.spk.mk
 
 .PHONY: domoticz_extra_install
 domoticz_extra_install:
-	install -m 755 -d $(STAGING_DIR)/app
-	install -m 644 src/app/config $(STAGING_DIR)/app/config
+	@$(MSG) "Removing unnecessary python runtime and unused libraries"
+	@find $(STAGING_DIR)/lib/python3.14 -type f -regex '.*\.py[co]' -delete
+	@rm -rf $(STAGING_DIR)/lib/python3.14/__pycache__ \
+	       $(STAGING_DIR)/lib/python3.14/idlelib \
+	       $(STAGING_DIR)/lib/python3.14/tkinter \
+	       $(STAGING_DIR)/lib/python3.14/turtledemo \
+	       $(STAGING_DIR)/lib/python3.14/ensurepip \
+	       $(STAGING_DIR)/lib/python3.14/pydoc_data
+	@rm -rf $(STAGING_DIR)/share/terminfo
+	@find $(STAGING_DIR)/lib -maxdepth 1 -name 'libboost_*' ! -name 'libboost_thread*' -delete

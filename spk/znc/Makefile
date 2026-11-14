@@ -1,29 +1,26 @@
 SPK_NAME = znc
-SPK_VERS = 1.7.5
-SPK_REV = 13
+SPK_VERS = 1.10.3
+SPK_REV = 31
 SPK_ICON = src/znc.png
 DSM_UI_DIR = app
 
-DEPENDS = cross/busybox cross/$(SPK_NAME)
+PYTHON_PACKAGE = python314
 
-MAINTAINER = m4tt075
+MAINTAINER = SynoCommunity
 DESCRIPTION = Advanced IRC bouncer. An IRC bouncer is nothing more than an IRC proxy. ZNC will always be connected in your chat rooms, and will be the gateway between your clients, and your IRC servers. You can, for instance, consult messages while you were offline or hide your identity.
 DESCRIPTION_FRE = Bouncer IRC avancé. Un bouncer IRC n\’est en fait qu\’un proxy IRC. ZNC restera connecté en permanence à vos salons de discussions et fera office de passerelle entre vos clients et vos serveurs IRC. Vous pourrez, par exemple, consultez des messages diffusés en votre absence ou masquer votre identité.
 DESCRIPTION_SPN = IRC bouncer avanzado. Un IRC bouncer no es más que un proxy para IRC. ZNC estará siempre conectado a tus canales, y hará de puerta de enlace entre tus clientes y tus servidores IRC. Puedes, por ejemplo, consultar mensajes mientras estuviste desconectado o esconder tu identidad.
-RELOAD_UI = yes
 DISPLAY_NAME = ZNC
-CHANGELOG = "Update to ZNC 1.7.5"
+CHANGELOG  = "Update to ZNC 1.10.3<br/>"
+CHANGELOG += "Migrate to Python 3.14<br/>"
+CHANGELOG += "Fix a start-up failure: the bundled boost needs libquadmath, which the package did not carry"
 
 STARTABLE = yes
-HOMEPAGE = http://wiki.znc.in/
+HOMEPAGE = https://wiki.znc.in/
 LICENSE  = Apache License 2.0
 
-# Ensure C++11 compatibility
-UNSUPPORTED_ARCHS = $(ARM5_ARCHES)
-
-
-WIZARDS_DIR = src/wizard/
-CONF_DIR = src/conf/
+WIZARDS_DIR = src/wizard
+CONF_DIR = src/conf
 
 # 'auto' reserved value grabs SPK_NAME
 SERVICE_USER = auto
@@ -38,16 +35,21 @@ ADMIN_PORT = ${SERVICE_PORT}
 
 POST_STRIP_TARGET = znc_extra_install
 
-BUSYBOX_CONFIG = usrmng
-ENV += BUSYBOX_CONFIG="$(BUSYBOX_CONFIG)"
+# Boost must be built from spk
+DEPENDS = cross/boost-1.92
+export BOOST_BUILD_PATH="$(WORK_DIR)/boost_1_92_0"
+export BOOST_LIBRARIES="locale"
+ENV += PATH=$(BOOST_BUILD_PATH):$(PATH)
 
-include ../../mk/spksrc.spk.mk
+DEPENDS += cross/znc
+
+include ../../mk/spksrc.common.mk
+
+include ../../mk/spksrc.spk-meta.mk
 
 .PHONY: znc_extra_install
 znc_extra_install:
-	install -m 755 -d $(STAGING_DIR)/var
-	install -m 755 -d $(STAGING_DIR)/var/modules
-	install -m 755 -d $(STAGING_DIR)/var/configs
+	install -m 755 -d $(STAGING_DIR)/var/modules $(STAGING_DIR)/var/configs
 	install -m 644 src/znc.conf $(STAGING_DIR)/var/configs/znc.conf
 	install -m 644 src/oidentd.conf ${STAGING_DIR}/var/configs/oidentd.conf
 	ln -sf /etc/ssl/certs $(STAGING_DIR)/certs

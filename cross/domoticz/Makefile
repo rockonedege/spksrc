@@ -1,34 +1,56 @@
 PKG_NAME = domoticz
-PKG_VERS = 4.9700
+PKG_VERS = 2026.4
 PKG_EXT = tar.gz
-PKG_DIST_NAME = $(PKG_VERS).$(PKG_EXT)
-PKG_DIST_SITE = https://github.com/domoticz/domoticz/archive
+# The domoticz_src_* release asset bundles all git submodules (jsoncpp, minizip, jwtcpp, sqlite).
+# Plain tag archives do not contain the submodules and will not build. There is no .git in the
+# archive; the build revision is resolved from History.txt (see patches/002-fix-history-revision-path.patch).
+PKG_DIST_NAME = domoticz_src_2026.18387.$(PKG_EXT)
+PKG_DIST_SITE = https://github.com/domoticz/domoticz/releases/download/$(PKG_VERS)
 PKG_DIST_FILE = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
-PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
+PKG_DIR = domoticz
 
-DEPENDS = cross/boost cross/sqlite cross/curl cross/python3
+# libusb-compat provides the legacy libusb-0.1 API (usb.h/libusb.so) that
+# domoticz uses for TE923/Voltcraft USB weather stations (as in upstream CI)
+DEPENDS = cross/boost cross/curl cross/lua-5.3 cross/mosquitto cross/openssl3 cross/sqlite cross/zlib cross/libusb-compat
+DEPENDS += cross/python314
 
-HOMEPAGE = http://www.domoticz.com/
+# Requires C++ compiler, supporting at least C++17.
+MIN_GCC_VERSION = 7
+
+HOMEPAGE = https://www.domoticz.com/
 COMMENT  = Domoticz is a Home Automation System.
-LICENSE  = GPL-3.0
+LICENSE  = GPLv3
 
-CONFIGURE_TARGET = domoticz_configure
-INSTALL_TARGET = domoticz_install
+# jsoncpp, minizip and jwt-cpp are built from the bundled submodules
+# (the source archive contains them, no network access required)
+CONFIGURE_ARGS += -DUSE_BUILTIN_JSONCPP=YES
+CONFIGURE_ARGS += -DUSE_BUILTIN_MINIZIP=YES
+CONFIGURE_ARGS += -DUSE_BUILTIN_JWTCPP=YES
+# use the cross-compiled sqlite instead of the bundled one
+CONFIGURE_ARGS += -DUSE_BUILTIN_SQLITE=NO
+# GIT_SUBMODULE must stay OFF so cmake does not try to refresh the submodules over the network
+CONFIGURE_ARGS += -DGIT_SUBMODULE=OFF
+# Python plugins, using the cross-compiled python
+CONFIGURE_ARGS += -DUSE_PYTHON=YES
+# cross/python314 provides the headers and shared library
+ADDITIONAL_CPPFLAGS += -I$(STAGING_INSTALL_PREFIX)/include/python3.14
+# FindPython3 needs explicit hints since the cross-compiled python cannot run on the build host
+CONFIGURE_ARGS += -DPython3_ROOT_DIR=$(STAGING_INSTALL_PREFIX)
+CONFIGURE_ARGS += -DPython3_INCLUDE_DIR=$(STAGING_INSTALL_PREFIX)/include/python3.14
+CONFIGURE_ARGS += -DPython3_LIBRARY=$(STAGING_INSTALL_PREFIX)/lib/libpython3.14.so
+# open-zwave is deprecated upstream (domoticz recommends zwavejs2mqtt + MQTT auto
+# discovery), so Z-Wave hardware support is intentionally disabled.
 
-BOOST_LIBRARIES = system thread date_time
-ENV += BOOST_LIBRARIES="$(BOOST_LIBRARIES)" CMAKE_INCLUDE_PATH="$(STAGING_INSTALL_PREFIX)/include" CMAKE_LIBRARY_PATH="$(STAGING_INSTALL_PREFIX)/lib" PCH_COMPILE_FLAGS="$(CFLAGS)"
+# match the stable (master) release channel: version string without build number and "-beta" suffix
+CONFIGURE_ARGS += -DBUILD_MASTER=ON
+# use shared boost libraries (as provided by cross/boost) instead of static ones
+CONFIGURE_ARGS += -DUSE_STATIC_BOOST=NO
+# std::filesystem needs -lstdc++fs on gcc 7/8 (DSM 7.x toolchains)
+CONFIGURE_ARGS += -DCMAKE_CXX_STANDARD_LIBRARIES=-lstdc++fs
 
-include ../../mk/spksrc.cross-cc.mk
+ENV += CMAKE_INCLUDE_PATH="$(STAGING_INSTALL_PREFIX)/include"
+ENV += CMAKE_LIBRARY_PATH="$(STAGING_INSTALL_PREFIX)/lib"
 
-.PHONY: domoticz_configure
-domoticz_configure:
-	$(RUN) cmake CMakeLists.txt
+USE_NATIVE_CMAKE = 1
 
-.PHONY: domoticz_install
-domoticz_install:
-	@mkdir -p $(STAGING_INSTALL_PREFIX)/bin
-	@$(RUN) install -m 755 domoticz $(STAGING_INSTALL_PREFIX)/bin
-	@$(RUN) cp -R www $(STAGING_INSTALL_PREFIX)
-	@$(RUN) cp -R Config $(STAGING_INSTALL_PREFIX)
-	@$(RUN) cp -R scripts $(STAGING_INSTALL_PREFIX)
-	@mkdir -p $(STAGING_INSTALL_PREFIX)/var
+include ../../mk/spksrc.cross-cmake.mk

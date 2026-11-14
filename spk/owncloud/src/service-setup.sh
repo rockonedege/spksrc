@@ -1,0 +1,661 @@
+# ownCloud service setup (DSM 7, PHP 8.3)
+WEB_ROOT="/var/services/web_packages/${SYNOPKG_PKGNAME}"
+if [ -z "${SYNOPKG_PKGTMP}" ]; then
+    SYNOPKG_PKGTMP="${SYNOPKG_PKGDEST_VOL}/@tmp"
+fi
+
+# Others
+MYSQL="/usr/local/mariadb10/bin/mysql"
+MYSQLDUMP="/usr/local/mariadb10/bin/mysqldump"
+MYSQL_DATABASE="${SYNOPKG_PKGNAME}"
+MYSQL_USER="oc_${wizard_owncloud_admin_username}"
+
+# Function to compare two version numbers
+version_greater_equal() {
+    v1=$(echo "$1" | awk -F. '{ printf "%d%03d%03d\n", $1, $2, $3 }')
+    v2=$(echo "$2" | awk -F. '{ printf "%d%03d%03d\n", $1, $2, $3 }')
+    [ "$v1" -ge "$v2" ]
+}
+
+# Read a scalar from config/config.php without running PHP.
+config_get() {
+    sed -n "s/^[[:space:]]*'$1'[[:space:]]*=>[[:space:]]*'\([^']*\)'.*/\1/p" "${WEB_ROOT}/config/config.php" 2>/dev/null | head -1
+}
+
+# Data share root. The wizard variable is only set on install; on upgrade fall
+# back to the package's share link, then to the data directory's parent.
+share_path() {
+    if [ -n "${SHARE_PATH}" ] && [ -d "${SHARE_PATH}" ]; then
+        echo "${SHARE_PATH}"
+        return 0
+    fi
+    local share datadir
+    for share in /var/packages/${SYNOPKG_PKGNAME}/shares/*; do
+        [ -e "${share}" ] || continue
+        share=$(realpath "${share}" 2>/dev/null)
+        if [ -n "${share}" ]; then
+            echo "${share}"
+            return 0
+        fi
+    done
+    datadir=$(config_get datadirectory)
+    [ -n "${datadir}" ] && dirname "${datadir}"
+}
+
+# ownCloud version from version.php.
+occ_version() {
+    sed -n "s/.*OC_VersionString = '\([^']*\)'.*/\1/p" "${WEB_ROOT}/version.php" 2>/dev/null | head -1
+}
+
+# ownCloud version from a <name>_backup_v<version>_<date>.tar.gz archive name.
+backup_version() {
+    echo "$1" | sed -n "s/.*${SYNOPKG_PKGNAME}_backup_v\([0-9][0-9.]*\)_.*/\1/p"
+}
+
+# Append the HTTPS redirect and HSTS rules. The integrity check ignores
+# everything after the "DO NOT CHANGE ANYTHING ABOVE THIS LINE" marker, so this
+# does not affect code signing.
+configure_htaccess() {
+    local conf="${WEB_ROOT}/.htaccess"
+    [ -f "${conf}" ] || return 0
+    # ownCloud writes its integrity marker and dynamic rules through occ. The
+    # marker is what lets the integrity check ignore our appends.
+    if ! grep -q "DO NOT CHANGE ANYTHING ABOVE THIS LINE" "${conf}" 2>/dev/null; then
+        exec_occ maintenance:update:htaccess >/dev/null 2>&1 || true
+    fi
+    if ! grep -q "DO NOT CHANGE ANYTHING ABOVE THIS LINE" "${conf}" 2>/dev/null; then
+        echo "WARNING: .htaccess has no integrity marker; not adding HTTPS/HSTS rules" >&2
+        return 0
+    fi
+    grep -q "Strict-Transport-Security" "${conf}" 2>/dev/null && return 0
+    {
+        echo ""
+        echo "# Added by the SynoCommunity package: HTTPS redirect and HSTS"
+        echo "<IfModule mod_rewrite.c>"
+        echo "RewriteEngine On"
+        echo "RewriteCond %{HTTPS} off"
+        echo "RewriteRule ^(.*)$ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]"
+        echo "</IfModule>"
+        echo "<IfModule mod_headers.c>"
+        echo "Header always set Strict-Transport-Security \"max-age=15552000; includeSubDomains\""
+        echo "</IfModule>"
+    } >> "${conf}"
+}
+
+# oC10 only runs on PHP 7.4 and oC11 requires PHP 8.3. Pick the interpreter
+# from the deployed tree so pre-upgrade steps work on the old code and
+# post-upgrade steps on the new one.
+occ_php() {
+    local major
+    major=$(sed -n \
+        -e 's/.*OC_Version[[:space:]]*=[[:space:]]*\[[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+        -e 's/.*OC_Version[[:space:]]*=[[:space:]]*array[[:space:]]*([[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+        "${WEB_ROOT}/version.php" 2>/dev/null | head -1)
+    if [ -n "${major}" ] && [ "${major}" -lt 11 ] && [ -x /usr/local/bin/php74 ]; then
+        echo /usr/local/bin/php74
+    else
+        echo /usr/local/bin/php83
+    fi
+}
+
+exec_occ() {
+    local php
+    php=$(occ_php)
+    # DSM 7 runs the package scripts as the package user, which owns
+    # config/config.php, so occ can be called directly (no su needed).
+    "$php" "${WEB_ROOT}/occ" "$@"
+}
+
+setup_owncloud_instance()
+{
+    if [ "${SYNOPKG_PKG_STATUS}" = "INSTALL" ]; then
+        # Setup database
+        ${MYSQL} -u root -p"${wizard_mysql_password_root}" -e "CREATE DATABASE ${MYSQL_DATABASE}; GRANT ALL PRIVILEGES ON ${MYSQL_DATABASE}.* TO '${MYSQL_USER}'@'localhost' IDENTIFIED BY '${wizard_mysql_password_owncloud}';"
+
+        # Setup configuration file
+        exec_occ maintenance:install \
+        --database "mysql" \
+        --database-name "${MYSQL_DATABASE}" \
+        --database-host "localhost:/run/mysqld/mysqld10.sock" \
+        --database-user "${MYSQL_USER}" \
+        --database-pass "${wizard_mysql_password_owncloud}" \
+        --admin-user "${wizard_owncloud_admin_username}" \
+        --admin-pass "${wizard_owncloud_admin_password}" \
+        --data-dir "${DATA_DIR}" 2>&1
+
+        # Get the trusted domains
+        DOMAINS="$(exec_occ config:system:get trusted_domains)"
+
+        # Fix trusted domains array
+        line_number=0
+        echo "${DOMAINS}" | while read -r line; do
+            if echo "$line" | grep -qE ':5000|:5001'; then
+                # Remove ":5000" or ":5001" from the line and update the trusted_domains array
+                new_line=$(echo "$line" | sed -E 's/(:5000|:5001)//')
+                exec_occ config:system:set trusted_domains "$line_number" --value="$new_line"
+            fi
+            line_number=$((line_number + 1))
+        done
+
+        # Refresh the trusted domains
+        DOMAINS="$(exec_occ config:system:get trusted_domains)"
+
+        # Add user-specified trusted domains
+        line_number=$(echo "$DOMAINS" | wc -l)
+        for var in wizard_owncloud_trusted_domain_1 wizard_owncloud_trusted_domain_2 wizard_owncloud_trusted_domain_3; do
+            eval val=\$$var
+            if [ -n "$val" ]; then
+                # Check if the domain is already in the trusted domains
+                if ! echo "$DOMAINS" | grep -qx "$val"; then
+                    exec_occ config:system:set trusted_domains "$line_number" --value="$val"
+                    line_number=$((line_number + 1))
+                fi
+            fi
+        done
+
+        # Configure background jobs
+        exec_occ system:cron
+
+        # Configure memory caching
+        MEMCACHE_LOCAL_VAL="\\OC\\Memcache\\APCu"
+        exec_occ config:system:set memcache.local --value="$MEMCACHE_LOCAL_VAL"
+
+        # Configure file locking
+        MEMCACHE_LOCKING_VAL="\\OC\\Memcache\\Redis"
+        exec_occ config:system:set memcache.locking --value="$MEMCACHE_LOCKING_VAL"
+        exec_occ config:system:set filelocking.enabled --value="true"
+    fi
+}
+
+validate_preinst ()
+{
+    if [ "${SYNOPKG_PKG_STATUS}" = "INSTALL" ]; then
+        # Check database
+        if ! ${MYSQL} -u root -p"${wizard_mysql_password_root}" -e quit > /dev/null 2>&1; then
+            echo "Incorrect MariaDB 'root' password"
+            exit 1
+        fi
+        if ${MYSQL} -u root -p"${wizard_mysql_password_root}" mysql -e "SELECT User FROM user" | grep ^"${MYSQL_USER}"$ > /dev/null 2>&1; then
+            echo "MariaDB user '${MYSQL_USER}' already exists"
+            exit 1
+        fi
+        if ${MYSQL} -u root -p"${wizard_mysql_password_root}" -e "SHOW DATABASES" | grep ^"${MYSQL_DATABASE}"$ > /dev/null 2>&1; then
+            echo "MariaDB database '${MYSQL_DATABASE}' already exists"
+            exit 1
+        fi
+
+        # Check for valid backup to restore
+        if [ "${wizard_owncloud_restore}" = "true" ] && [ -n "${wizard_backup_file}" ]; then
+            if [ ! -f "${wizard_backup_file}" ]; then
+                echo "The backup file path specified is incorrect or not accessible."
+                exit 1
+            fi
+            # Check backup file prefix
+            filename=$(basename "${wizard_backup_file}")
+            expected_prefix="${SYNOPKG_PKGNAME}_backup_v"
+
+            if [ "${filename#"$expected_prefix"}" = "$filename" ]; then
+                echo "The backup filename does not start with the expected prefix."
+                exit 1
+            fi
+            # Check the minimum required version
+            file_version=$(backup_version "$filename")
+            min_version="10.15.0"
+            if ! version_greater_equal "$file_version" "$min_version"; then
+                echo "The backup version is too old. Minimum required version is $min_version."
+                exit 1
+            fi
+        fi
+    fi
+}
+
+service_postinst ()
+{
+    if [ "${SYNOPKG_PKG_STATUS}" = "INSTALL" ]; then
+        # Parse data directory
+        DATA_DIR="${SHARE_PATH}/data"
+        # Create data directory
+        ${MKDIR} "${DATA_DIR}"
+
+        # Check restore action
+        if [ "${wizard_owncloud_restore}" = "true" ]; then
+            echo "The backup file is valid, performing restore."
+            # Extract archive to temp folder
+            TEMPDIR="${SYNOPKG_PKGTMP}/${SYNOPKG_PKGNAME}"
+            ${MKDIR} "${TEMPDIR}"
+            tar -xzf "${wizard_backup_file}" -C "${TEMPDIR}" 2>&1
+
+            # Restore configuration files and directories
+            rsync -aX -I "${TEMPDIR}/configs/config" "${TEMPDIR}/configs/apps" "${TEMPDIR}/configs/apps-external" "${WEB_ROOT}/" 2>&1
+
+            # Restore user data
+            echo "Restoring user data to ${DATA_DIR}"
+            rsync -aX -I "${TEMPDIR}/data" "${SHARE_PATH}/" 2>&1
+
+            # Restore the Database
+            db_user=$(config_get dbuser)
+            db_password=$(config_get dbpassword)
+
+            echo "Creating database ${MYSQL_DATABASE} and access"
+            ${MYSQL} -u root -p"${wizard_mysql_password_root}" -e "CREATE DATABASE ${MYSQL_DATABASE}; GRANT ALL PRIVILEGES ON ${MYSQL_DATABASE}.* TO '${db_user}'@'localhost' IDENTIFIED BY '${db_password}';" 2>&1
+
+            echo "Restoring database ${MYSQL_DATABASE} from backup"
+            ${MYSQL} -u root -p"${wizard_mysql_password_root}" "${MYSQL_DATABASE}" < "${TEMPDIR}/database/${MYSQL_DATABASE}-dbbackup.sql" 2>&1
+
+            # Update the systems data-fingerprint after a backup is restored
+            exec_occ maintenance:data-fingerprint -n
+
+            # Disable maintenance mode
+            exec_occ maintenance:mode --off
+
+            # Compare the archive version with the package version.
+            file_version=$(backup_version "$(basename "${wizard_backup_file}")")
+            package_version=$(echo "${SYNOPKG_PKGVER}" | cut -d '-' -f 1)
+            if [ -n "$file_version" ]; then
+                if ! version_greater_equal "$file_version" "$package_version"; then
+                    echo "The archive version ($file_version) is older than the package version ($package_version). Triggering upgrade."
+                    exec_occ upgrade
+                fi
+            fi
+
+            # Configure background jobs
+            exec_occ system:cron
+
+            # Clean-up temporary files
+            ${RM} "${TEMPDIR}"
+        else
+            echo "Run ownCloud installer"
+            setup_owncloud_instance
+        fi
+
+        configure_htaccess
+
+    fi
+}
+
+validate_preuninst ()
+{
+    if [ "${SYNOPKG_PKG_STATUS}" = "UNINSTALL" ]; then
+        # Check database
+        if ! ${MYSQL} -u root -p"${wizard_mysql_password_root}" -e quit >/dev/null 2>&1; then
+            echo "Incorrect MariaDB 'root' password"
+            exit 1
+        fi
+        # Check export directory
+        if [ -n "${wizard_export_path}" ]; then
+            if [ ! -d "${wizard_export_path}" ]; then
+                echo "Error: Export directory ${wizard_export_path} does not exist"
+                exit 1
+            fi
+            if [ ! -w "${wizard_export_path}" ]; then
+                echo "Error: Unable to write to directory ${wizard_export_path}. Check permissions."
+                exit 1
+            fi
+            # Ensure the configured data directory exists before attempting a backup
+            DATADIR="$(config_get datadirectory)"
+            if [ -z "${DATADIR}" ] || [ ! -d "${DATADIR}" ]; then
+                echo "Expected data directory missing; aborting uninstall backup"
+                exit 1
+            fi
+        fi
+    fi
+}
+
+service_preuninst ()
+{
+    if [ "${SYNOPKG_PKG_STATUS}" = "UNINSTALL" ] && [ -n "${wizard_export_path}" ]; then
+        # Get data directory
+        DATADIR="$(config_get datadirectory)"
+        # Data directory fail-safe
+        if [ ! -d "$DATADIR" ]; then
+            echo "Invalid data directory '$DATADIR'. Using the default data directory instead."
+            DATADIR="${WEB_ROOT}/data"
+        fi
+
+        # Prepare archive structure
+        OC_VER=$(occ_version)
+        TEMPDIR="${SYNOPKG_PKGTMP}/${SYNOPKG_PKGNAME}_backup_v${OC_VER}_$(date +"%Y%m%d")"
+        ${MKDIR} "${TEMPDIR}"
+
+        # Place server in maintenance mode
+        exec_occ maintenance:mode --on
+
+        # Backup the Database
+        echo "Copying previous database from ${MYSQL_DATABASE}"
+        ${MKDIR} "${TEMPDIR}/database"
+        if ! MYSQL_PWD="${wizard_mysql_password_root}" ${MYSQLDUMP} -u root "${MYSQL_DATABASE}" > "${TEMPDIR}/database/${MYSQL_DATABASE}-dbbackup.sql"; then
+            echo "ERROR: database backup failed; leaving the database in place"
+            exec_occ maintenance:mode --off >/dev/null 2>&1 || true
+            ${RM} "${TEMPDIR}"
+            # Skip the database drop below; never drop it without a backup.
+            return 1
+        fi
+
+        # Backup Directories
+        echo "Copying previous configuration from ${WEB_ROOT}"
+        ${MKDIR} "${TEMPDIR}/configs/root"
+        rsync -aX "${WEB_ROOT}/.user.ini" "${WEB_ROOT}/.htaccess" "${TEMPDIR}/configs/root/" 2>&1
+        rsync -aX "${WEB_ROOT}/config" "${WEB_ROOT}/apps" "${WEB_ROOT}/apps-external" "${TEMPDIR}/configs/" 2>&1
+
+        # Backup user data
+        echo "Copying previous user data from ${DATADIR}"
+        rsync -aX "${DATADIR}" "${TEMPDIR}/" 2>&1
+
+        # Disable maintenance mode
+        exec_occ maintenance:mode --off
+
+        # Create backup archive
+        archive_name="$(basename "$TEMPDIR").tar.gz"
+        echo "Creating compressed archive of ownCloud data in file $archive_name"
+        tar -C "$TEMPDIR" -czf "${SYNOPKG_PKGTMP}/$archive_name" . 2>&1
+
+        # Move archive to export directory
+        RSYNC_BAK_ARGS="--backup --suffix=.bak"
+        # shellcheck disable=SC2086  # RSYNC_BAK_ARGS is intentionally a multi-word arg list
+        rsync -aX ${RSYNC_BAK_ARGS} "${SYNOPKG_PKGTMP}/$archive_name" "${wizard_export_path}/" 2>&1
+        echo "Backup file copied successfully to ${wizard_export_path}."
+
+        # Clean-up temporary files
+        ${RM} "${TEMPDIR}"
+        ${RM} "${SYNOPKG_PKGTMP}/$archive_name"
+    fi
+
+    # Remove database
+    if [ "${SYNOPKG_PKG_STATUS}" = "UNINSTALL" ]; then
+        MYSQL_USER="$(exec_occ config:system:get dbuser)"
+
+        echo "Dropping database: ${MYSQL_DATABASE}"
+        ${MYSQL} -u root -p"${wizard_mysql_password_root}" -e "DROP DATABASE ${MYSQL_DATABASE};"
+
+        # Drop the database user (exact match, all hosts)
+        ${MYSQL} -u root -p"${wizard_mysql_password_root}" -N -B -e "SELECT Host FROM mysql.user WHERE User = '${MYSQL_USER}';" | while read -r host; do
+            echo "Dropping user: ${MYSQL_USER}@${host}"
+            ${MYSQL} -u root -p"${wizard_mysql_password_root}" -e "DROP USER '${MYSQL_USER}'@'${host}';"
+        done
+    fi
+}
+
+validate_preupgrade ()
+{
+    # Mirrors ownCloud's version.php OC_VersionCanBeUpgradedFrom
+    # [[8,2,11],[9,0,9],[9,1]] and Updater::isUpgradePossible(): the previous
+    # version must be >= one of the allowed entries and <= the new one.
+    is_upgrade_possible="no"
+    previous=$(echo "${SYNOPKG_OLD_PKGVER}" | cut -d '-' -f 1)
+    new=$(echo "${SYNOPKG_PKGVER}" | cut -d '-' -f 1)
+    if version_greater_equal "${new}" "${previous}"; then
+        if echo "${previous}" | grep -q '^8\.2\.' && version_greater_equal "${previous}" "8.2.11"; then
+            is_upgrade_possible="yes"
+        elif echo "${previous}" | grep -q '^9\.0\.' && version_greater_equal "${previous}" "9.0.9"; then
+            is_upgrade_possible="yes"
+        elif version_greater_equal "${previous}" "9.1"; then
+            is_upgrade_possible="yes"
+        fi
+    fi
+
+    # No matching upgrade paths found
+    if [ "$is_upgrade_possible" = "no" ]; then
+        echo "Please uninstall previous version, no update possible from v${SYNOPKG_OLD_PKGVER}. Remember to save your data files before uninstalling."
+        exit 1
+    fi
+
+    # ownCloud upgrades only possible from MySQL instances
+    DATABASE_TYPE="$(config_get dbtype)"
+    if [ "$DATABASE_TYPE" != "mysql" ]; then
+        echo "Please migrate your previous database from ${DATABASE_TYPE} to mariadb (mysql) before performing upgrade."
+        exit 1
+    fi
+
+    # Ensure data directory is present before proceeding
+    DATADIR="$(config_get datadirectory)"
+    if [ -z "${DATADIR}" ] || [ ! -d "${DATADIR}" ]; then
+        echo "Expected data directory missing; aborting upgrade"
+        exit 1
+    fi
+
+    # Read the application credentials early and refuse a read-only database.
+    # occ upgrade would fail later in postupgrade, which DSM treats as a
+    # corrupted package; aborting here leaves the old package intact.
+    DB_NAME=$(config_get dbname)
+    DB_USER=$(config_get dbuser)
+    DB_PASS=$(config_get dbpassword)
+    if [ -z "$DB_NAME" ] || [ -z "$DB_USER" ]; then
+        echo "ERROR: cannot read database settings from config.php; aborting upgrade"
+        exit 1
+    fi
+    if ! read_only=$(MYSQL_PWD="$DB_PASS" ${MYSQL} -N -B -u "$DB_USER" "$DB_NAME" -e "SELECT @@global.read_only"); then
+        echo "ERROR: cannot query the database with the ownCloud credentials"
+        exit 1
+    fi
+    if [ "${read_only}" = "1" ]; then
+        echo "ERROR: MariaDB is running in read-only mode; disable read_only before upgrading"
+        exit 1
+    fi
+
+    # ------------------------------------------------------------------
+    # Vendor upgrade procedure (11.0 manual upgrade). These steps run here
+    # because validate_preupgrade is called without the install_log pipe, so
+    # exit aborts the package upgrade before any files are replaced.
+    # ------------------------------------------------------------------
+    BACKUP_DIR="${SYNOPKG_PKGVAR}/backup"
+    ${MKDIR} "${BACKUP_DIR}"
+    OC_VER=$(occ_version)
+    OC_VER="${OC_VER:-unknown}"
+    STAMP=$(date +%Y%m%d%H%M%S)
+
+    # Step 1: maintenance mode. (The package creates no cron job, so there is
+    # nothing to disable.)
+    if ! exec_occ maintenance:mode --on >&2; then
+        echo "ERROR: could not enable maintenance mode; aborting upgrade"
+        exit 1
+    fi
+
+    # Step 2: disable third-party apps (not shipped by ownCloud).
+    DISABLED_APPS="${BACKUP_DIR}/disabled-apps-${OC_VER}-${STAMP}.txt"
+    : > "${DISABLED_APPS}"
+    for dir in "${WEB_ROOT}/apps"/* "${WEB_ROOT}/apps-external"/*; do
+        [ -d "$dir" ] || continue
+        app=$(basename "$dir")
+        if [ ! -d "${SYNOPKG_PKGDEST}/share/owncloud/apps/${app}" ]; then
+            if exec_occ app:disable "$app" >/dev/null 2>&1; then
+                echo "$app" >> "${DISABLED_APPS}"
+            fi
+        fi
+    done
+
+    if [ ! -s "${DISABLED_APPS}" ]; then
+        echo "(none)" > "${DISABLED_APPS}"
+    fi
+
+    # Step 3: backup the database with the application credentials.
+    DB_DUMP="${BACKUP_DIR}/owncloud-${OC_VER}-${STAMP}.sql.gz"
+    DB_DUMP_TMP="${DB_DUMP%.gz}"
+    if ! MYSQL_PWD="$DB_PASS" ${MYSQLDUMP} --single-transaction --quick -u "$DB_USER" "$DB_NAME" > "$DB_DUMP_TMP"; then
+        ${RM} -f "$DB_DUMP_TMP"
+        exec_occ maintenance:mode --off >/dev/null 2>&1 || true
+        echo "ERROR: database backup failed; aborting upgrade"
+        exit 1
+    fi
+    if ! gzip "$DB_DUMP_TMP"; then
+        ${RM} -f "$DB_DUMP_TMP" "$DB_DUMP"
+        exec_occ maintenance:mode --off >/dev/null 2>&1 || true
+        echo "ERROR: could not compress the database backup; aborting upgrade"
+        exit 1
+    fi
+    if ! gzip -t "$DB_DUMP"; then
+        exec_occ maintenance:mode --off >/dev/null 2>&1 || true
+        echo "ERROR: database backup is corrupt; aborting upgrade"
+        exit 1
+    fi
+    echo "Database backup: ${DB_DUMP}" >&2
+
+    # Step 4: keep .htaccess/.user.ini for manual re-application. The vendor
+    # recreates these files on upgrade, so they are not restored.
+    [ -f "${WEB_ROOT}/.htaccess" ] && cp -p "${WEB_ROOT}/.htaccess" "${BACKUP_DIR}/htaccess-${OC_VER}-${STAMP}"
+    [ -f "${WEB_ROOT}/.user.ini" ] && cp -p "${WEB_ROOT}/.user.ini" "${BACKUP_DIR}/user.ini-${OC_VER}-${STAMP}"
+
+    # Major upgrades: keep a full pre-upgrade backup in the wizard-export
+    # format so the built-in restore wizard can use it.
+    ${RM} -f "${SYNOPKG_TEMP_UPGRADE_FOLDER}/.fullbackup" "${SYNOPKG_TEMP_UPGRADE_FOLDER}/.datadirectory"
+    if [ "${previous%%.*}" != "${new%%.*}" ]; then
+        SHARE_PATH=$(share_path)
+        if [ -z "${SHARE_PATH}" ] || [ ! -d "${SHARE_PATH}" ]; then
+            exec_occ maintenance:mode --off >/dev/null 2>&1 || true
+            echo "ERROR: cannot determine the data share for the pre-upgrade backup; aborting upgrade"
+            exit 1
+        fi
+        FULL_BACKUP="${SHARE_PATH}/owncloud_backup_v${OC_VER}_$(date +%Y%m%d).tar.gz"
+        if [ -f "${FULL_BACKUP}" ]; then
+            echo "Existing backup moved to ${FULL_BACKUP}.bak" >&2
+            mv -f "${FULL_BACKUP}" "${FULL_BACKUP}.bak"
+        fi
+        FULL_TMP="${SYNOPKG_PKGTMP}/owncloud_backup_${STAMP}"
+        echo "Creating pre-upgrade backup at ${FULL_BACKUP}" >&2
+        ${MKDIR} "${FULL_TMP}/configs/root" "${FULL_TMP}/database"
+        for d in config apps apps-external; do
+            if [ -d "${WEB_ROOT}/${d}" ]; then
+                rsync -aX "${WEB_ROOT}/${d}" "${FULL_TMP}/configs/" >&2
+            else
+                ${MKDIR} "${FULL_TMP}/configs/${d}"
+            fi
+        done
+        [ -f "${WEB_ROOT}/.htaccess" ] && cp -p "${WEB_ROOT}/.htaccess" "${FULL_TMP}/configs/root/"
+        [ -f "${WEB_ROOT}/.user.ini" ] && cp -p "${WEB_ROOT}/.user.ini" "${FULL_TMP}/configs/root/"
+        zcat "${DB_DUMP}" > "${FULL_TMP}/database/${MYSQL_DATABASE}-dbbackup.sql" 2>/dev/null
+        if ! rsync -aX "${DATADIR}" "${FULL_TMP}/" >&2 || ! tar -C "${FULL_TMP}" -czf "${FULL_BACKUP}" . 2>&1; then
+            ${RM} "${FULL_TMP}"
+            exec_occ maintenance:mode --off >/dev/null 2>&1 || true
+            echo "ERROR: could not create the pre-upgrade backup; free space and retry"
+            exit 1
+        fi
+        ${RM} "${FULL_TMP}"
+        echo "${FULL_BACKUP}" > "${SYNOPKG_TEMP_UPGRADE_FOLDER}/.fullbackup"
+    fi
+
+    # Data directory marker and rollback backup of the distribution.
+    DATADIR_REAL=$(realpath "$DATADIR")
+    WEBROOT_REAL=$(realpath "${WEB_ROOT}")
+    if echo "$DATADIR_REAL" | grep -q "^$WEBROOT_REAL"; then
+        echo "${DATADIR_REAL#"$WEBROOT_REAL/"}" > "${SYNOPKG_TEMP_UPGRADE_FOLDER}/.datadirectory"
+    fi
+    [ -d "${SYNOPKG_TEMP_UPGRADE_FOLDER}/${SYNOPKG_PKGNAME}" ] && ${RM} "${SYNOPKG_TEMP_UPGRADE_FOLDER}/${SYNOPKG_PKGNAME}"
+    echo "Backup existing distribution to ${SYNOPKG_TEMP_UPGRADE_FOLDER}/${SYNOPKG_PKGNAME}" >&2
+    ${MKDIR} "${SYNOPKG_TEMP_UPGRADE_FOLDER}/${SYNOPKG_PKGNAME}"
+    if ! rsync -aX "${WEB_ROOT}/" "${SYNOPKG_TEMP_UPGRADE_FOLDER}/${SYNOPKG_PKGNAME}" >&2; then
+        exec_occ maintenance:mode --off >/dev/null 2>&1 || true
+        echo "ERROR: distribution backup failed; aborting upgrade"
+        exit 1
+    fi
+}
+
+service_restore ()
+{
+    TMP_BACKUP="${SYNOPKG_TEMP_UPGRADE_FOLDER}/${SYNOPKG_PKGNAME}"
+    FULL_BACKUP=""
+    [ -f "${SYNOPKG_TEMP_UPGRADE_FOLDER}/.fullbackup" ] && FULL_BACKUP=$(cat "${SYNOPKG_TEMP_UPGRADE_FOLDER}/.fullbackup")
+
+    # Restore a data directory that lived inside the web root.
+    if [ -f "${SYNOPKG_TEMP_UPGRADE_FOLDER}/.datadirectory" ]; then
+        DATAPATH=$(cat "${SYNOPKG_TEMP_UPGRADE_FOLDER}/.datadirectory")
+        echo "Restore previous data directory from ${TMP_BACKUP}/${DATAPATH}"
+        rsync -aX -I "${TMP_BACKUP}/${DATAPATH}" "${WEB_ROOT}/" 2>&1
+        ${RM} "${SYNOPKG_TEMP_UPGRADE_FOLDER}/.datadirectory"
+    fi
+
+    # Restore the configuration files (config.php and any *.json).
+    echo "Restore previous configuration from ${TMP_BACKUP}"
+    find "${TMP_BACKUP}/config" -maxdepth 1 -type f \
+        \( -name '*config.php' -o -name '*.json' \) \
+        -exec rsync -aX -I {} "${WEB_ROOT}/config/" \; 2>&1
+
+    # Restore manually installed apps that the new tree does not ship.
+    echo "Restore manually installed apps from ${TMP_BACKUP}"
+    for dir in apps apps-external; do
+        [ -d "${TMP_BACKUP}/${dir}" ] || continue
+        if [ ! -d "${WEB_ROOT}/${dir}" ]; then
+            rsync -aX "${TMP_BACKUP}/${dir}" "${WEB_ROOT}/" 2>&1
+            continue
+        fi
+        for app in "${TMP_BACKUP}/${dir}"/*; do
+            [ -d "$app" ] || continue
+            [ -d "${WEB_ROOT}/${dir}/$(basename "$app")" ] || rsync -aX "$app" "${WEB_ROOT}/${dir}/" 2>&1
+        done
+    done
+
+    # Run the upgrade while maintenance mode is on (vendor procedure). As it is
+    # already enabled, occ leaves it on; disable it afterwards.
+    if ! exec_occ upgrade; then
+        echo "ERROR: occ upgrade failed; maintenance mode stays on"
+        echo "ERROR: the pre-upgrade web root is kept at ${TMP_BACKUP}"
+        if [ -n "${FULL_BACKUP}" ]; then
+            # Build a persistent rollback kit on the data share so it survives
+            # an uninstall of the package.
+            SHARE_PATH=$(share_path)
+            ROLLBACK_STAMP=$(date +%Y%m%d%H%M%S)
+            ROLLBACK_DIR="${SHARE_PATH}/owncloud-rollback-${ROLLBACK_STAMP}"
+            if ! ${MKDIR} -p "${ROLLBACK_DIR}" 2>/dev/null; then
+                ROLLBACK_DIR="${SYNOPKG_PKGVAR}/backup/rollback-${ROLLBACK_STAMP}"
+                ${MKDIR} -p "${ROLLBACK_DIR}" 2>/dev/null || true
+            fi
+            OLD_PKGVER="${SYNOPKG_OLD_PKGVER}"
+            [ -n "${OLD_PKGVER}" ] || OLD_PKGVER=$(backup_version "$(basename "${FULL_BACKUP}")")
+            sed -e "s|@FULL_BACKUP@|${FULL_BACKUP}|g" -e "s|@OLD_PKGVER@|${OLD_PKGVER}|g" \
+                "${SYNOPKG_PKGDEST}/templates/ROLLBACK.txt" > "${ROLLBACK_DIR}/ROLLBACK.txt" 2>/dev/null || true
+            chmod 0755 "${ROLLBACK_DIR}" 2>/dev/null || true
+            chmod 0644 "${ROLLBACK_DIR}/ROLLBACK.txt" 2>/dev/null || true
+            echo "ERROR: rollback instructions at ${ROLLBACK_DIR}"
+            echo "ERROR: pre-upgrade backup kept at ${FULL_BACKUP}"
+            echo "ERROR: follow ROLLBACK.txt to return to ${OLD_PKGVER}"
+            ROLLBACK_MSG="Roll back using ${ROLLBACK_DIR}/ROLLBACK.txt."
+        else
+            echo "ERROR: no rollback kit was created for this minor upgrade"
+            ROLLBACK_MSG="No rollback kit was created for this minor upgrade."
+        fi
+        # DSM marks the package corrupted when postupgrade returns non-zero,
+        # and this function runs in a subshell, so a non-zero exit would not
+        # propagate anyway. Keep the package healthy: leave maintenance mode
+        # on for the operator to handle.
+        if [ -n "${SYNOPKG_TEMP_LOGFILE}" ]; then
+            {
+                echo "ownCloud upgrade failed."
+                echo "ownCloud is in maintenance mode; the database was not upgraded."
+                echo "${ROLLBACK_MSG}"
+            } >> "${SYNOPKG_TEMP_LOGFILE}"
+        fi
+        return 0
+    fi
+
+    # Disable maintenance mode after a successful upgrade.
+    if ! exec_occ maintenance:mode --off; then
+        echo "WARNING: could not disable maintenance mode; run 'occ maintenance:mode --off' manually"
+    fi
+
+    # Re-apply the HTTPS redirect and HSTS rules to the new .htaccess.
+    configure_htaccess
+
+    # Check the upgrade: version and app list.
+    exec_occ status
+    exec_occ app:list
+
+    echo "Third-party apps disabled before the upgrade are listed in ${SYNOPKG_PKGVAR}/backup/disabled-apps-*.txt; re-enable compatible ones with 'occ app:enable <app>'."
+
+    if [ -n "${FULL_BACKUP}" ]; then
+        echo "Pre-upgrade backup kept at ${FULL_BACKUP}"
+        ${RM} "${SYNOPKG_TEMP_UPGRADE_FOLDER}/.fullbackup"
+    fi
+
+    # Remove upgrade backup files
+    ${RM} "${SYNOPKG_TEMP_UPGRADE_FOLDER}/${SYNOPKG_PKGNAME}"
+
+    # Keep the two newest backup sets per type (the stamp is the last 14 digits).
+    for pattern in "owncloud-*.sql.gz" "htaccess-*" "user.ini-*" "disabled-apps-*"; do
+        ls -1 "${SYNOPKG_PKGVAR}/backup"/${pattern} 2>/dev/null \
+            | sed 's/.*-\([0-9]\{14\}\)[^0-9]*$/\1 &/' \
+            | sort -rn \
+            | cut -d' ' -f2- \
+            | tail -n +3 \
+            | while IFS= read -r old; do
+                [ -n "${old}" ] && ${RM} "${old}"
+            done
+    done
+}

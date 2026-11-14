@@ -1,6 +1,6 @@
 SPK_NAME = irssi
-SPK_VERS = 0.8.17
-SPK_REV = 1
+SPK_VERS = 1.4.5
+SPK_REV = 4
 SPK_ICON = src/irssi.png
 
 DEPENDS = cross/irssi
@@ -9,15 +9,13 @@ MAINTAINER = SynoCommunity
 DESCRIPTION = Irssi is a terminal based IRC client for UNIX systems. It also supports SILC and ICB protocols via plugins.
 DISPLAY_NAME = Irssi
 STARTABLE = no
-BETA = 1
+CHANGELOG = "1. Update Irssi to v1.4.5. <br/>2. Bundle autodl-irssi plugin."
 
-HOMEPAGE = http://www.irssi.org/
+HOMEPAGE = https://www.irssi.org/
 LICENSE = GPLv2
-HELP_URL = https://irssi.org/documentation/
 
-INSTALLER_SCRIPT = src/installer.sh
-SSS_SCRIPT       = src/dsm-control.sh
+SERVICE_SETUP = src/service-setup.sh
 
-INSTALL_PREFIX = /usr/local/$(SPK_NAME)
+SPK_COMMANDS = bin/irssi
 
 include ../../mk/spksrc.spk.mk

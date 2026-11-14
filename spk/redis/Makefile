@@ -1,33 +1,38 @@
 SPK_NAME = redis
-SPK_VERS = 5.0.7
-SPK_REV = 6
+SPK_VERS = 8.10.2
+SPK_REV = 20
 SPK_ICON = src/redis.png
-DSM_UI_DIR = app
 
-DEPENDS = cross/$(SPK_NAME)
+DEPENDS = cross/redis
 
-MAINTAINER = DigitalBox98
+MAINTAINER = hgy59
 DESCRIPTION = Redis is an open source, advanced key-value store. It is often referred to as a data structure server since keys can contain strings, hashes, lists, sets and sorted sets.
 
-RELOAD_UI = yes
-STARTABLE = yes
 DISPLAY_NAME = redis
 
-CHANGELOG = "Update to 5.0.7"
+CHANGELOG = "Update redis to v8.10.2 (security fixes since v8.8.0, including RDB remote code execution, TLS authentication bypass and ACL bypass fixes)."
 
-# PPC_ARCHES except qoriq are not supported anymore
-UNSUPPORTED_ARCHS = powerpc ppc824x ppc853x ppc854x
+HOMEPAGE = https://redis.io
+LICENSE  = RSALv2 / SSPLv1 / AGPLv3
+LICENSE_FILE = $(WORK_DIR)/$(SPK_NAME)-$(SPK_VERS)/LICENSE.txt
 
-HOMEPAGE = http://redis.io
-LICENSE  = 3-clause BSD
+WIZARDS_DIR = src/wizard/
 
+STARTABLE = yes
 SERVICE_USER = auto
 SERVICE_SETUP = src/service-setup.sh
+SERVICE_PORT = 6379
+SERVICE_PORT_TITLE = redis TCP
 NO_SERVICE_SHORTCUT = yes
 
-INSTALL_PREFIX = /usr/local/$(SPK_NAME)
-
 POST_STRIP_TARGET = redis_extra_install
+
+# add links for tools
+SPK_COMMANDS  = bin/redis-benchmark
+SPK_COMMANDS += bin/redis-check-aof
+SPK_COMMANDS += bin/redis-check-rdb
+SPK_COMMANDS += bin/redis-cli
+SPK_COMMANDS += bin/redis-sentinel
 
 include ../../mk/spksrc.spk.mk
 
@@ -35,3 +40,4 @@ include ../../mk/spksrc.spk.mk
 redis_extra_install:
 	install -m 755 -d $(STAGING_DIR)/var
 	install -m 644 src/redis.conf $(STAGING_DIR)/var/redis.conf
+	install -m 644 src/sentinel.conf $(STAGING_DIR)/var/sentinel.conf

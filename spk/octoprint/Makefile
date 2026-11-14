@@ -1,40 +1,46 @@
 SPK_NAME   = octoprint
-SPK_VERS   = $(shell date +%Y%m%d)
-SPK_REV    = 4
+SPK_VERS   = 1.11.8
+SPK_REV    = 16
 SPK_ICON   = src/octoprint.png
 DSM_UI_DIR = app
 
-BETA = 1
+PYTHON_PACKAGE = python312
 
-BUILD_DEPENDS = cross/python cross/setuptools cross/pip cross/wheel
-DEPENDS = cross/$(SPK_NAME)
-WHEELS  = src/requirements.txt
+WHEELS = src/requirements-crossenv.txt src/requirements-pure.txt
 
-SPK_DEPENDS = "python>=2.7.11-15"
+# Required for PyYAML
+DEPENDS += cross/libyaml
 
 MAINTAINER   = SynoCommunity
-DESCRIPTION  = OctoPrint is a so called host software for 3D printers that controls your 3D printer and sends it the actual commands to do its job.
-ADMIN_PORT   = 8088
-RELOAD_UI    = yes
+DESCRIPTION  = The snappy web interface for your 3D printer.
+SERVICE_PORT = 8088
+ADMIN_PORT   = $(SERVICE_PORT)
+
 DISPLAY_NAME = OctoPrint
-HOMEPAGE     = http://octoprint.org/
+HOMEPAGE     = https://octoprint.org/
 LICENSE      = AGPLv3
+CHANGELOG    = "Update OctoPrint to v1.11.8."
 
-INSTALLER_SCRIPT = src/installer.sh
-SSS_SCRIPT       = src/dsm-control.sh
-FWPORTS          = src/${SPK_NAME}.sc
-CONF_DIR         = src/conf/
-
-INSTALL_PREFIX = /usr/local/$(SPK_NAME)
+# SERVICE_COMMAND is in src/service-setup.sh
+STARTABLE     = yes
+SERVICE_SETUP = src/service-setup.sh
+SERVICE_USER  = auto
 
 POST_STRIP_TARGET = octoprint_extra_install
 
-include ../../mk/spksrc.spk.mk
+# /tmp might be too small for plugin installation
+USE_ALTERNATE_TMPDIR = 1
+
+include ../../mk/spksrc.spk-meta.mk
+
+# argon2-cffi-bindings enables SSE2 by default and its cmake detection
+# misses the cross target (x86-only -msse2 breaks non-x86 builds);
+# force the portable implementation off-x86 (supported upstream knob)
+ifneq ($(findstring $(ARCH),$(x64_ARCHS) $(i686_ARCHS)),$(ARCH))
+ENV += ARGON2_CFFI_USE_SSE2=0
+endif
 
 .PHONY: octoprint_extra_install
 octoprint_extra_install:
-	install -m 755 -d $(STAGING_DIR)/var
-	install -m 755 -d ${STAGING_DIR}/var/.octoprint
-	install -m 600 src/config.yaml ${STAGING_DIR}/var/.octoprint/config.yaml
-	install -m 755 -d $(STAGING_DIR)/app
-	install -m 644 src/app/config $(STAGING_DIR)/app/config
+	install -m 755 -d $(STAGING_DIR)/var/.octoprint
+	install -m 600 src/config.yaml $(STAGING_DIR)/var/.octoprint/config.yaml

@@ -1,42 +1,38 @@
 SPK_NAME = fengoffice
-SPK_VERS = 2.5.1.2
-SPK_REV = 3
+SPK_VERS = 4.2.0.3
+SPK_REV = 11
 SPK_ICON = src/fengoffice.png
-DSM_UI_DIR = app
 
-DEPENDS  = cross/busybox cross/$(SPK_NAME)
+DEPENDS = cross/fengoffice
+# Pure PHP package, make sure ARCH is noarch
+override ARCH=noarch
 
-MAINTAINER = moneytoo
+# Requires PHP 8.2+. PHP 8.3 is used because PHP 8.4 no longer ships the imap extension.
+REQUIRED_MIN_DSM = 7.2
+# SRM is not supported due lacking webstation, php, mariadb and apache packages
+REQUIRED_MIN_SRM = 3.0
+
+MAINTAINER = SynoCommunity
 DESCRIPTION = Feng Office is a Collaboration Platform and Project Management System.
-ADMIN_URL = /fengoffice/
-RELOAD_UI = yes
 DISPLAY_NAME = Feng Office
-CHANGELOG = "1. DSM 5.0 compatibility"
+CHANGELOG = "Update to v4.2.0.3 (PHP 8.3, DSM 7.2+)."
 
-HOMEPAGE   = http://www.fengoffice.com/
-LICENSE    = AGPL
+HOMEPAGE = https://www.fengoffice.com/
+LICENSE = AGPL
+
+STARTABLE = yes
+SERVICE_USER = auto
+SERVICE_SETUP = src/service-setup.sh
+
+ADMIN_URL = /fengoffice/
 
 WIZARDS_DIR = src/wizard/
+SYSTEM_GROUP = http
+
+DSM_UI_DIR = app
+DSM_UI_CONFIG = src/app/config
+
+SPK_DEPENDS = "WebStation:PHP8.3:MariaDB10:Apache2.4"
 CONF_DIR = src/conf/
 
-INSTALLER_SCRIPT = src/installer.sh
-SSS_SCRIPT       = src/dsm-control.sh
-
-INSTALL_DEP_SERVICES = apache-web mysql
-START_DEP_SERVICES = apache-web mysql
-
-INSTALL_PREFIX = /usr/local/$(SPK_NAME)
-
-POST_STRIP_TARGET = fengoffice_extra_install
-
-BUSYBOX_CONFIG = daemon nice
-ENV += BUSYBOX_CONFIG="$(BUSYBOX_CONFIG)"
-
 include ../../mk/spksrc.spk.mk
-
-.PHONY: fengoffice_extra_install
-fengoffice_extra_install: 
-	install -m 755 -d $(STAGING_DIR)/var
-	install -m 755 src/fengoffice.sh $(STAGING_DIR)/bin/
-	install -m 755 -d $(STAGING_DIR)/app
-	install -m 644 src/app/config $(STAGING_DIR)/app/config

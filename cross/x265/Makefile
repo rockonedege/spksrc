@@ -1,106 +1,94 @@
 PKG_NAME = x265
-PKG_VERS = 3.4
+PKG_VERS = 4.2
 PKG_EXT = tar.gz
-PKG_DIST_NAME = $(PKG_VERS).$(PKG_EXT)
-PKG_DIST_SITE = https://github.com/videolan/x265/archive
-PKG_DIR = $(PKG_NAME)-$(PKG_VERS)/source
-PKG_DIST_FILE = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
-
-DEPENDS =
-OPTIONAL_DEPENDS = native/nasm cross/libnuma
+PKG_DIST_NAME = $(PKG_NAME)_$(PKG_VERS).$(PKG_EXT)
+PKG_DIST_SITE = https://bitbucket.org/multicoreware/x265_git/downloads
+PKG_DIR = $(PKG_NAME)_$(PKG_VERS)
 
 HOMEPAGE = http://x265.org/
 COMMENT  = x265 is an open source HEVC encoder.
-LICENSE  = GPL
+LICENSE  = GPLv2
 
-CONFIGURE_TARGET = x265_custom_configure
+# Needs gcc >= 4.6: the full 8+10+12-bit encoder builds on 88f6281's 4.6.4. Only HDR10+
+# wants 4.8, and is left out below that (ENABLE_HDR10_PLUS below), not the encoder.
+MIN_GCC_VERSION = 4.6
 
-NASM_PATH = $(WORK_DIR)/../../../native/nasm/work-native/install/usr/local/bin
+PRE_CONFIGURE_TARGET = x265_pre_configure
+PRE_COMPILE_TARGET = x265_pre_compile
 
-CMAKE_ARGS = -DCMAKE_INSTALL_PREFIX=$(INSTALL_PREFIX)
-CMAKE_ARGS += -DCMAKE_CROSSCOMPILING=TRUE
-CMAKE_ARGS += -DCMAKE_SYSTEM_NAME=Linux
-CMAKE_ARGS += -DCMAKE_C_COMPILER=$(TC_PATH)$(TC_PREFIX)gcc
-CMAKE_ARGS += -DCMAKE_CXX_COMPILER=$(TC_PATH)$(TC_PREFIX)g++
-CMAKE_ARGS += -DCMAKE_INSTALL_RPATH=$(INSTALL_PREFIX)/lib
-CMAKE_ARGS += -DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE
-CMAKE_ARGS += -DCMAKE_BUILD_WITH_INSTALL_RPATH=TRUE
+CMAKE_SOURCE_DIR = source
 
-include ../../mk/spksrc.cross-cc.mk
+# Build directories for default, 12 and 10 bit depth
+BUILD_DIR = $(WORK_DIR)/$(PKG_DIR)/buildAll
+CMAKE_BUILD_12B = $(WORK_DIR)/$(PKG_DIR)/build12bit
+CMAKE_BUILD_10B = $(WORK_DIR)/$(PKG_DIR)/build10bit
 
-# gcc version above 4.8 required to support hdr10plus
+# additional cmake args for the build of 10 and 12 bit depth libraries
+CMAKE_ARGS_BITLIB += -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF
+CMAKE_ARGS_BITLIB += -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DEXTRA_LINK_FLAGS="-ldl"
+# provide cmake toolchain path when building bitlibs
+CMAKE_ARGS_BITLIB += -DCMAKE_TOOLCHAIN_FILE=$(CMAKE_TOOLCHAIN_FILE_PKG)
+
+# additional cmake args for the final multilib build
+ADDITIONAL_CONFIGURE_ARGS += -DEXTRA_LIB="x265_main10.a;x265_main12.a" -DEXTRA_LINK_FLAGS="-ldl -L."
+ADDITIONAL_CONFIGURE_ARGS += -DLINKED_10BIT=ON -DLINKED_12BIT=ON -DENABLE_SHARED=ON
+
+include ../../mk/spksrc.common.mk
+
+ifeq ($(findstring $(ARCH),$(ARMv8_ARCHS)),$(ARCH))
+ifeq ($(call version_ge, $(TCVERSION), 7.1),1)
+# asm code is now compatible with arm64/aarch64 for DSM >= 7.1 (except i8mm instructions)
+CONFIGURE_ARGS += -DENABLE_NEON_I8MM=OFF
+else
+# https://bitbucket.org/multicoreware/x265_git/issues/549/fail-to-build-for-aarch64-and-armhf
+CONFIGURE_ARGS += -DENABLE_ASSEMBLY=OFF
+endif
+endif
+
+ifeq ($(findstring $(ARCH),$(32bit_ARCHS)),$(ARCH))
+# asm code for HIGH_BIT_DEPTH is not compatible with 32-bit archs
+CONFIGURE_ARGS += -DENABLE_ASSEMBLY=OFF
+endif
+
+
+# Fixes:
+#    https://github.com/SynoCommunity/spksrc/issues/5314
+#    https://github.com/SynoCommunity/spksrc/issues/6597
+ifeq ($(findstring $(ARCH),$(PPC_ARCHS)),$(ARCH))
+CONFIGURE_ARGS += -DENABLE_PIC=ON
+CONFIGURE_ARGS += -DNO_ATOMICS=ON
+endif
+
+ifeq ($(findstring $(ARCH),$(i686_ARCHS) $(x64_ARCHS)),$(ARCH))
+CONFIGURE_ARGS += -DCMAKE_ASM_NASM_FLAGS=-w-macro-params-legacy
+endif
+
+# HDR10+ needs gcc >= 4.8: x265's CMakeLists refuses it on VERSION_LESS 4.8
+ifeq ($(call version_lt, $(TC_GCC), 4.8),1)
 PLIST_TRANSFORM = sed -e '/:lib\/libhdr10plus.so/d'
-ifeq ($(findstring $(TCVERSION), "6.0.2 6.1 6.2"),$(TCVERSION))
-ifneq ($(findstring $(ARCH), $(ARM5_ARCHES)),$(ARCH))
-CMAKE_ARGS += -DENABLE_HDR10_PLUS=ON
+else
+CONFIGURE_ARGS += -DENABLE_HDR10_PLUS=ON
 PLIST_TRANSFORM = cat
 endif
+
+ifeq ($(call version_le, $(TC_GCC), 5),1)
+ADDITIONAL_CXXFLAGS += -Wno-missing-field-initializers
 endif
 
-ifeq ($(findstring $(ARCH), $(ARM5_ARCHES)),$(ARCH))
-CMAKE_ARGS += -DCROSS_COMPILE_ARM=ON -DENABLE_ASSEMBLY=OFF -DCMAKE_SYSTEM_PROCESSOR=armv5
-endif
+include ../../mk/spksrc.cross-cmake.mk
 
-ifeq ($(findstring $(ARCH), $(ARM7_ARCHES)),$(ARCH))
-CMAKE_ARGS += -DCMAKE_CXX_FLAGS=-fPIC -DCROSS_COMPILE_ARM=ON -DENABLE_ASSEMBLY=OFF
-CMAKE_ARGS += -DCMAKE_SYSTEM_PROCESSOR=armv7
-endif
+.PHONY: x265_pre_configure
+x265_pre_configure: $(CMAKE_TOOLCHAIN_FILE_PKG)
+	@$(MSG) Configure 12BIT libraries
+	$(RUN_CMAKE) cmake -S $(WORK_DIR)/$(PKG_DIR)/source -B $(CMAKE_BUILD_12B) $(CONFIGURE_ARGS) $(CMAKE_ARGS_BITLIB) -DMAIN12=ON -G Ninja
+	@$(MSG) Configure 10BIT libraries
+	$(RUN_CMAKE) cmake -S $(WORK_DIR)/$(PKG_DIR)/source -B $(CMAKE_BUILD_10B) $(CONFIGURE_ARGS) $(CMAKE_ARGS_BITLIB) -G Ninja
 
-ifeq ($(findstring $(ARCH), $(ARM8_ARCHES)),$(ARCH))
-CMAKE_ARGS += -DCMAKE_CXX_FLAGS=-fPIC -DCROSS_COMPILE_ARM=ON -DENABLE_ASSEMBLY=OFF
-CMAKE_ARGS += -DCMAKE_SYSTEM_PROCESSOR=aarch64
-endif
-
-ifeq ($(findstring $(ARCH), $(PPC_ARCHES)),$(ARCH))
-CMAKE_ARGS += -DCMAKE_SYSTEM_PROCESSOR=ppc64 -DENABLE_ALTIVEC=OFF -DCPU_POWER8=OFF
-endif
-
-ifeq ($(findstring $(ARCH), $(x64_ARCHES)),$(ARCH))
-DEPENDS += native/nasm cross/libnuma
-ENV += PATH=$(NASM_PATH):$$PATH
-ENV += AS=$(NASM_PATH)/nasm
-CMAKE_ARGS += -DCMAKE_SYSTEM_PROCESSOR=x86_64
-endif
-
-ifeq ($(findstring $(ARCH), $(x86_ARCHES)),$(ARCH))
-DEPENDS += native/nasm cross/libnuma
-ENV += PATH=$(NASM_PATH):$$PATH
-ENV += AS=$(NASM_PATH)/nasm
-CMAKE_ARGS += -DENABLE_ASSEMBLY=OFF -DCMAKE_SYSTEM_PROCESSOR=x86
-endif
-
-# For ppc853x-4.3, disable atomics
-ifeq ($(ARCH)-$(TCVERSION), ppc853x-4.3)
-CMAKE_ARGS += -DNO_ATOMICS=ON
-CMAKE_ARGS += -DCMAKE_CXX_FLAGS="-DSPKSRC_FIX_PPC853X_4_3"
-endif
-
-
-.PHONY: $(PKG_DIR)/libx265_main12.a $(PKG_DIR)/libx265_main10.a x265_custom_configure
-
-# First create specific static libraries with build options for 12 and 10 bit depth
-PKG_WORK_DIR = $(WORK_DIR)/$(PKG_NAME)-$(PKG_VERS)
-PKG_BUILD_12BIT = $(PKG_WORK_DIR)/build12bit
-PKG_BUILD_10BIT = $(PKG_WORK_DIR)/build10bit
-
-CMAKE_BITLIB_ARGS = -DHIGH_BIT_DEPTH=ON -DEXPORT_C_API=OFF
-CMAKE_BITLIB_ARGS += -DENABLE_SHARED=OFF -DENABLE_CLI=OFF -DEXTRA_LINK_FLAGS="-ldl"
-
-$(PKG_DIR)/libx265_main12.a:
-	mkdir --parents $(PKG_BUILD_12BIT)
-	cd $(PKG_BUILD_12BIT) && cmake $(CMAKE_ARGS) $(CMAKE_BITLIB_ARGS) -DMAIN12=ON ../source
-	cd $(PKG_BUILD_12BIT) && $(MAKE) $(COMPILE_OPTIONS)
-	$(RUN) ln -sf $(PKG_BUILD_12BIT)/libx265.a libx265_main12.a
-
-$(PKG_DIR)/libx265_main10.a:
-	mkdir --parents $(PKG_BUILD_10BIT)
-	cd $(PKG_BUILD_10BIT) && cmake $(CMAKE_ARGS) $(CMAKE_BITLIB_ARGS) ../source
-	cd $(PKG_BUILD_10BIT) && $(MAKE) $(COMPILE_OPTIONS)
-	$(RUN) ln -sf $(PKG_BUILD_10BIT)/libx265.a libx265_main10.a
-
-# Aggregate them all together in default 8 bit depth build
-CMAKE_MULTILIB_ARGS = -DEXTRA_LIB="x265_main10.a;x265_main12.a" -DEXTRA_LINK_FLAGS="-ldl -L."
-CMAKE_MULTILIB_ARGS += -DLINKED_10BIT=ON -DLINKED_12BIT=ON -DENABLE_SHARED=ON
-
-x265_custom_configure: $(PKG_DIR)/libx265_main12.a $(PKG_DIR)/libx265_main10.a
-	$(RUN) cmake $(CMAKE_ARGS) $(CMAKE_MULTILIB_ARGS) .
+.PHONY: x265_pre_compile
+x265_pre_compile:
+	@$(MSG) Build 12BIT libraries
+	@$(RUN) ninja -C $(CMAKE_BUILD_12B)
+	@$(MSG) Build 10BIT libraries
+	@$(RUN) ninja -C $(CMAKE_BUILD_10B)
+	@$(RUN) ln -sf $(CMAKE_BUILD_12B)/libx265.a $(BUILD_DIR)/libx265_main12.a
+	@$(RUN) ln -sf $(CMAKE_BUILD_10B)/libx265.a $(BUILD_DIR)/libx265_main10.a

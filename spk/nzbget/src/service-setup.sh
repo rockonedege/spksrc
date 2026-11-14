@@ -1,37 +1,67 @@
+
 PATH="${SYNOPKG_PKGDEST}/bin:${PATH}"
 NZBGET="${SYNOPKG_PKGDEST}/bin/nzbget"
-CFG_FILE="${SYNOPKG_PKGDEST}/var/nzbget.conf"
+CFG_FILE="${SYNOPKG_PKGVAR}/nzbget.conf"
 TEMPLATE_CFG_FILE="${SYNOPKG_PKGDEST}/share/nzbget/nzbget.conf"
 WEBDIR="${SYNOPKG_PKGDEST}/bin/webui"
-NZBGET_INSTALLER="${SYNOPKG_PKGDEST}/var/nzbget.run"
+NZBGET_INSTALLER="${SYNOPKG_PKGVAR}/nzbget.run"
 GROUP="sc-download"
+# Version of NZBGet to install for kernel < 3.2
+KERNEL_PINNED_VERSION="26.3"
 
 # Force-overwrite the PID-file and WebDir setting
 # These could change depending on previous package settings
 SERVICE_COMMAND="${NZBGET} -c ${CFG_FILE} -o WebDir=${WEBDIR} -o LockFile=${PID_FILE} -D"
 
+is_pre_3_2_kernel ()
+{
+    KERNEL_MAJOR=$(uname -r | cut -d. -f1)
+    KERNEL_MINOR=$(uname -r | cut -d. -f2)
+
+    [ "${KERNEL_MAJOR}" -lt 3 ] || { [ "${KERNEL_MAJOR}" -eq 3 ] && [ "${KERNEL_MINOR}" -lt 2 ]; }
+}
+
+validate_preinst ()
+{
+    # Latest (testing) installer is not compatible with kernels older than 3.2.
+    if [ -n "${wizard_testing_release}" ] && [ "${wizard_testing_release}" = true ] && is_pre_3_2_kernel; then
+        echo "Latest testing NZBGet is not supported on kernel $(uname -r) (< 3.2). Select stable instead."
+        exit 1
+    fi
+}
+
 service_postinst ()
 {
-    # Download latest NZBGet
+    # Download current NZBGet (stable or testing)
     if [ -n "${wizard_stable_release}" ] && [ "${wizard_stable_release}" = true ]; then
-        wget -O "${NZBGET_INSTALLER}" "https://nzbget.net/download/nzbget-latest-bin-linux.run" >> ${INST_LOG} 2>&1
+        if is_pre_3_2_kernel; then
+            echo "Download nzbget installer: ${KERNEL_PINNED_VERSION} (kernel $(uname -r) < 3.2)"
+            wget --quiet --output-document="${NZBGET_INSTALLER}" "https://github.com/nzbgetcom/nzbget/releases/download/v${KERNEL_PINNED_VERSION}/nzbget-${KERNEL_PINNED_VERSION}-bin-linux.run"
+        else
+            echo "Download nzbget installer: latest"
+            wget --quiet --output-document="${NZBGET_INSTALLER}" "https://nzbget.com/download/nzbget-latest-bin-linux.run"
+        fi
     fi
     if [ -n "${wizard_testing_release}" ] && [ "${wizard_testing_release}" = true ]; then
-        wget -O "${NZBGET_INSTALLER}" "https://nzbget.net/download/nzbget-latest-testing-bin-linux.run" >> ${INST_LOG} 2>&1
+        echo "Download nzbget installer: latest-testing"
+        wget --quiet --output-document="${NZBGET_INSTALLER}" "https://nzbget.com/download/nzbget-latest-testing-bin-linux.run"
     fi
 
-    # Stop if download failed
+    # Abort if download failed
     if [ ! -r "${NZBGET_INSTALLER}" ]; then
         echo "Failed to download installer, please check the internet connection of your device."
         exit 1
     fi
+    echo "Download completed"
 
-    # On DSM5 the lib-dir is not owned by the package-user
-    set_unix_permissions "${SYNOPKG_PKGDEST}/bin"
-
-    # Install as nzbget user, for correct permissions
     chmod +x "${NZBGET_INSTALLER}"
-    su ${EFF_USER} -s /bin/sh -c "${NZBGET_INSTALLER} --destdir ${SYNOPKG_PKGDEST}/bin" >> ${INST_LOG} 2>&1
+    ${NZBGET_INSTALLER} --destdir ${SYNOPKG_PKGDEST}/bin
+
+    if [ $SYNOPKG_DSM_VERSION_MAJOR -lt 7 ]; then
+        # On DSM 5 and 6 the nzbget archive is extracted with the internal build owner (id 1001).
+        # Overwrite with the package owner
+        set_unix_permissions "${SYNOPKG_PKGDEST}/bin"
+    fi
 
     # Make sure installation worked
     if [ ! -r "${NZBGET}" ]; then
@@ -40,46 +70,35 @@ service_postinst ()
         exit 1
     fi
 
-    # Copy the new template config file created by installer
+    # Remove package-info.json from WebDir on pre-3.2 kernels to disable internal updater
+    if is_pre_3_2_kernel; then
+        rm -f "${WEBDIR}/package-info.json"
+    fi
+
+    # Make a copy of the config file created by the current installer
     cp -f ${SYNOPKG_PKGDEST}/bin/nzbget.conf ${TEMPLATE_CFG_FILE}
 
     # Remove installer
     rm -f "${NZBGET_INSTALLER}"
 
-    # Correct options from wizard
+    # Create the config file on demand
     if [ ! -e "${CFG_FILE}" ]; then
+        echo "Create initial config file"
+
         # Use whatever the installer found best
         # It does optimizations based on the current system
         cp -f ${TEMPLATE_CFG_FILE} ${CFG_FILE}
 
         # Edit the configuration according to the wizard
-        sed -i -e "s|MainDir=.*$|MainDir=${wizard_download_dir:=/volume1/downloads}|g" \
-               -e "s/ControlUsername=.*$/ControlUsername=${wizard_control_username:=nzbget}/g" \
-               -e "s/ControlPassword=.*$/ControlPassword=${wizard_control_password:=nzbget}/g" \
-               ${CFG_FILE}
+        sed -e "s|MainDir=.*$|MainDir=${wizard_download_volume}/${wizard_download_folder}|g" \
+            -e "s/ControlUsername=.*$/ControlUsername=${wizard_control_username:=nzbget}/g" \
+            -e "s/ControlPassword=.*$/ControlPassword=${wizard_control_password:=nzbget}/g" \
+            -i ${CFG_FILE}
 
         # Update to match our paths
-        sed -i -e "s|ScriptDir=.*$|ScriptDir=${SYNOPKG_PKGDEST}/share/nzbget/scripts|g" \
-               -e "s|LogFile=.*$|LogFile=${SYNOPKG_PKGDEST}/var/nzbget.log|g" \
-               -e "s|ConfigTemplate=.*$|ConfigTemplate=${TEMPLATE_CFG_FILE}|g" \
-               ${CFG_FILE}
-    fi
-
-    # Discard legacy obsolete busybox user account
-    BIN=${SYNOPKG_PKGDEST}/bin
-    $BIN/busybox --install $BIN >> ${INST_LOG}
-    $BIN/delgroup "${USER}" "users" >> ${INST_LOG}
-    $BIN/deluser "${USER}" >> ${INST_LOG}
-}
-
-service_postupgrade ()
-{
-    # Needed to force correct permissions, during update
-    # Extract the right paths from config file
-    if [ -r "${CFG_FILE}" ]; then
-        MAIN_DIR=`sed -n 's/^MainDir[ ]*=[ ]*//p' ${CFG_FILE}`
-        if [ -n "${MAIN_DIR}" ] && [ -d "${MAIN_DIR}" ]; then
-            set_syno_permissions "${MAIN_DIR}" "${GROUP}"
-        fi
+        sed -e "s|ScriptDir=.*$|ScriptDir=${SYNOPKG_PKGDEST}/share/nzbget/scripts|g" \
+            -e "s|LogFile=.*$|LogFile=${SYNOPKG_PKGVAR}/nzbget.log|g" \
+            -e "s|ConfigTemplate=.*$|ConfigTemplate=${TEMPLATE_CFG_FILE}|g" \
+            -i ${CFG_FILE}
     fi
 }

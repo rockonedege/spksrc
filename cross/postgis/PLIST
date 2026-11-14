@@ -1,0 +1,3 @@
+lib:lib/postgis-3.so
+rsc:share/contrib/
+rsc:share/extension/

@@ -1,58 +1,130 @@
 PKG_NAME = tvheadend
 PKG_VERS = 4.3
 PKG_EXT = tar.gz
-PKG_DOWNLOAD_METHOD = git
-PKG_GIT_HASH = ce09077056f9c6558c188d135cec3be85cc9c200
-PKG_DIST_SITE = https://github.com/tvheadend/tvheadend.git
+# no official release since v4.2.8 (Jan 12, 2019)
+# git hash from Oct 22nd 2026
+PKG_GIT_HASH = 51ec612fa22c4c78b4697e4c262c943da9cbd6cc
+PKG_DIST_NAME = $(PKG_GIT_HASH).$(PKG_EXT)
+PKG_DIST_SITE = https://github.com/tvheadend/tvheadend/archive
 PKG_DIST_FILE = $(PKG_NAME)-git$(PKG_GIT_HASH).$(PKG_EXT)
-PKG_DIR = $(PKG_NAME)-git$(PKG_GIT_HASH)
-
-DEPENDS = cross/openssl cross/uriparser cross/pcre2 cross/libiconv native/python
-DEPENDS += cross/libhdhomerun cross/libdvbcsa cross/dvb-apps cross/pngquant
+PKG_DIR = $(PKG_NAME)-$(PKG_GIT_HASH)
 
 HOMEPAGE = https://tvheadend.org/
 COMMENT  = Tvheadend is a TV streaming server and recorder for Linux, FreeBSD and Android supporting DVB-S, DVB-S2, DVB-C, DVB-T, ATSC, ISDB-T, IPTV, SAT IP and HDHomeRun as input sources. Tvheadend offers HTTP, HTSP and SAT IP streaming.
-LICENSE  = GPL v3
+LICENSE  = GPLv3
+
+# cccam.c calls be64toh, an <endian.h> macro glibc grew in 2.9: no compiler supplies it.
+MIN_GLIBC_VERSION = 2.9
+
+# Its own sources redefine typedefs, which only C11 allows -- gcc from 4.6, where 4.3.7
+# stops at "redefinition of typedef 'streaming_start_t'". Nothing above that: the ffmpeg
+# floor is ffmpeg's, and the meta below picks the version an arch can build.
+MIN_GCC_VERSION = 4.6
+
+include ../../mk/spksrc.common.mk
 
 GNU_CONFIGURE = 1
 PRE_CONFIGURE_TARGET = tvheadend_pre_configure
+POST_INSTALL_TARGET = tvheadend_post_install
 
-CONFIGURE_ARGS = --enable-imagecache --enable-bundle --enable-trace --release
+# Options that answer to no dependency of their own
+CONFIGURE_ARGS  = --python=/usr/bin/python3
+CONFIGURE_ARGS += --enable-imagecache --enable-bundle --enable-trace --release
 CONFIGURE_ARGS += --disable-bintray_cache --disable-avahi
-CONFIGURE_ARGS += --enable-dvbcsa --enable-pngquant
-CONFIGURE_ARGS += --disable-hdhomerun_static --enable-hdhomerun_client
 
-# Enable all libraries incoming from FFMPEG
-CONFIGURE_ARGS += --disable-libfdkaac_static --enable-libfdkaac
-CONFIGURE_ARGS += --disable-libopus_static --enable-libopus
-CONFIGURE_ARGS += --disable-libtheora_static --enable-libtheora
-CONFIGURE_ARGS += --disable-libvorbis_static --enable-libvorbis
-CONFIGURE_ARGS += --disable-libvpx_static --enable-libvpx
-CONFIGURE_ARGS += --disable-libx264_static --enable-libx264
-CONFIGURE_ARGS += --disable-libx265_static --enable-libx265
-ifeq ($(wildcard $(FFMPEG_DIR)),)
-DEPENDS += cross/fdk-aac cross/opus cross/libtheora cross/libvorbis cross/libvpx cross/x264 cross/x265
+# WARNING: pngquant fails when built after cross/zlib (i.e. cross/libpng), so it stays the
+# first dependency named -- ahead of the alphabetical order everything below follows.
+$(call depend,cross/pngquant,--enable-pngquant)
+
+# Dependencies with no option of their own: found by probe, or pulled in by another
+DEPENDS += cross/fontconfig
+DEPENDS += cross/gnutls
+DEPENDS += cross/libiconv
+DEPENDS += cross/openssl3
+DEPENDS += cross/pcre2
+DEPENDS += cross/uriparser
+
+DEPENDS += cross/curl
+export BUILD_CURL_WITH="gnutls libssh2 zstd"
+
+###
+### Optional dependencies with specific options
+###
+
+OPTIONAL_DEPENDS += cross/ffmpeg4
+OPTIONAL_DEPENDS += cross/ffmpeg8
+OPTIONAL_DEPENDS += cross/intel-libvpl
+OPTIONAL_DEPENDS += cross/intel-mediasdk
+OPTIONAL_DEPENDS += cross/libva
+OPTIONAL_DEPENDS += cross/libvpx
+
+$(call depend,cross/dbus,--enable-dbus_1)
+# dbus splits its headers between include/ and lib/dbus-1.0/include/
+#    - include/dbus-1.0/ (public) must precede
+#    - lib/dbus-1.0/include/ (arch-specific dbus-arch-deps.h)
+ADDITIONAL_CFLAGS += -I$(or $(VIDEODRV_STAGING_INSTALL_PREFIX),$(STAGING_INSTALL_PREFIX))/include/dbus-1.0
+ADDITIONAL_CFLAGS += -I$(or $(VIDEODRV_STAGING_INSTALL_PREFIX),$(STAGING_INSTALL_PREFIX))/lib/dbus-1.0/include
+
+$(call depend,cross/fdk-aac,--disable-libfdkaac_static --enable-libfdkaac)
+$(call depend,cross/libdvbcsa cross/dvb-apps,--enable-dvbcsa)
+$(call depend,cross/libhdhomerun,--disable-hdhomerun_static --enable-hdhomerun_client)
+$(call depend,cross/libtheora,--disable-libtheora_static --enable-libtheora)
+$(call depend,cross/libvorbis,--disable-libvorbis_static --enable-libvorbis)
+$(call depend,cross/libvpx,--disable-libvpx_static --enable-libvpx)
+$(call depend,cross/opus,--disable-libopus_static --enable-libopus)
+$(call depend,cross/x264,--disable-libx264_static --enable-libx264)
+$(call depend,cross/x265,--disable-libx265_static --enable-libx265,--disable-libx265)
+
+# ffmpeg8 needs gcc >= 4.9, ffmpeg4 declares none
+# Keep in step with spk/tvheadend, which picks its FFMPEG_PACKAGE the same way.
+ifeq ($(call version_lt,$(TC_GCC),4.9),1)
+DEPENDS += cross/ffmpeg4
+else
+DEPENDS += cross/ffmpeg8
 endif
-
 CONFIGURE_ARGS += --disable-ffmpeg_static --enable-libav
-ifeq ($(wildcard $(FFMPEG_DIR)),)
-DEPENDS += cross/ffmpeg
+
+ifneq ($(VIDEODRV_ON),)
+ifeq ($(findstring $(ARCH),$(x64_ARCHS)),$(ARCH))
+# The same floor libva itself declares. x86-5.2 is in x64_ARCHS but runs a 3.2 kernel,
+# so asking for the stack there would make the whole build unsupported instead of
+# quietly leaving vaapi out, which is what this arch wants.
+ifeq ($(call version_ge,$(TC_KERNEL),3.10),1)
+DEPENDS += cross/libva
+CONFIGURE_ARGS += --enable-vaapi
+
+# qsv takes oneVPL (vpl >= 2.0) or MediaSDK (libmfx >= 1.28), patches/102
+$(call depend,cross/intel-mediasdk|cross/intel-libvpl,--enable-qsv)
+endif  # kernel >= 3.10
+endif  # x64
+endif  # VIDEODRV_ON
+
+# Enable building of new UI
+BUILD_DEPENDS = native/nodejs-22
+CONFIGURE_ARGS += --enable-vue_build
+# Build environment - use native Node.js from spksrc
+ENV += PATH=$(WORK_DIR)/../../../native/nodejs-22/work-native/node/bin:$$PATH
+
+ifeq ($(call version_lt, ${TC_GCC}, 5.0),1)
+CONFIGURE_ARGS += --nowerror
+ADDITIONAL_CFLAGS += -std=gnu99
 endif
 
 include ../../mk/spksrc.cross-cc.mk
-
-ifeq ($(findstring $(ARCH),$(ARM5_ARCHES)),$(ARCH))
-CONFIGURE_ARGS += --nowerror
-endif
-
-ifeq ($(findstring $(ARCH), $(x64_ARCHES)),$(ARCH))
-CONFIGURE_ARGS += --enable-vaapi
-ifeq ($(wildcard $(FFMPEG_DIR)),)
-DEPENDS += cross/libva
-endif
-endif
 
 .PHONY: tvheadend_pre_configure
 tvheadend_pre_configure:
 	# Fix so mkbundle finds the pngquant binary
 	@$(RUN) sed -i.bak "s|^pngquant_bin = '/usr|pngquant_bin = '$(STAGING_INSTALL_PREFIX)|g" support/mkbundle
+
+.PHONY: tvheadend_post_install
+tvheadend_post_install:
+	# Enforce python3
+	@$(RUN) sed -i 's|env python$$|env python3|g' $(INSTALL_DIR)/$(INSTALL_PREFIX)/bin/tv_meta_tmdb.py
+	@$(RUN) sed -i 's|env python$$|env python3|g' $(INSTALL_DIR)/$(INSTALL_PREFIX)/bin/tv_meta_tvdb.py
+	# Imagecache audit tool (support/, tvheadend#2129): a developer tool that
+	# tvheadend's own build does not install.  Ship it with the package's config
+	# dir substituted as its last-resort fallback -- it normally finds the config
+	# dir from the running tvheadend process.
+	@$(RUN) sed 's|@TVHEADEND_LOCALSTATEDIR@|$(INSTALL_PREFIX_VAR)|' support/tv_imagecache_audit.py > $(INSTALL_DIR)/$(INSTALL_PREFIX)/bin/tv_imagecache_audit.py
+	@$(RUN) chmod 0755 $(INSTALL_DIR)/$(INSTALL_PREFIX)/bin/tv_imagecache_audit.py

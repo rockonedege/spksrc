@@ -1,0 +1,19 @@
+--- plugins/diskspace/init.js.orig
++++ plugins/diskspace/init.js
+@@ -1,4 +1,4 @@
+-plugin.loadLang();
++plugin.loadLang(true);
+ plugin.loadMainCSS();
+ 
+ plugin.setValue = function( full, free )
+@@ -19,6 +19,10 @@
+ 				.replace(/%FREE%/, theConverter.bytes(free))
+ 		);
+ 	}
++	else {
++		$("#meter-disk-pane").prop("title",
++			theConverter.bytes(used) + '/' + theConverter.bytes(full) + ' (' + theConverter.bytes(free) + ' free)');
++	}
+ 
+ 	if($.noty && plugin.allStuffLoaded)
+ 	{

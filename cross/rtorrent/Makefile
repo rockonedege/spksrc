@@ -1,38 +1,22 @@
 PKG_NAME = rtorrent
-PKG_VERS = 0.9.6
+PKG_VERS = 0.16.23
 PKG_EXT = tar.gz
-PKG_DIST_NAME = v$(PKG_VERS).$(PKG_EXT)
-PKG_DIST_FILE = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
-PKG_DIST_SITE = https://github.com/rakshasa/rtorrent/archive
+PKG_DIST_NAME = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
+PKG_DIST_SITE = https://github.com/rakshasa/rtorrent/releases/download/v$(PKG_VERS)
 PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
 
-UNSUPPORTED_ARCHS = powerpc ppc824x ppc854x
-
-DEPENDS = cross/ncurses cross/libsigc++ cross/curl cross/libtorrent-rakshasa cross/xmlrpc-c
+DEPENDS = cross/ncursesw cross/libsigc++ cross/curl cross/libtorrent-rakshasa cross/tinyxml2
 
 HOMEPAGE = https://rakshasa.github.com
 COMMENT  = rTorrent is a BitTorrent client for ncurses, using the libtorrent library. The client and library is written in C++ with emphasis on speed and efficiency, while delivering equivalent features to those found in GUI based clients in an ncurses client.
 LICENSE  = GPL
 
-GNU_CONFIGURE = 1
-PRE_CONFIGURE_TARGET = rtorrent_pre_configure
-PRE_PATCH_TARGET = rtorrent_pre_patch
-COMPILE_TARGET = rtorrent_compile
+# rtorrent mandates C++20: configure fails on GCC 8.5 and older
+# (verified) and builds green on GCC 12.2
+MIN_GCC_VERSION = 10
 
-CONFIGURE_ARGS = --with-xmlrpc-c=$(STAGING_INSTALL_PREFIX)/bin/xmlrpc-c-config
+GNU_CONFIGURE = 1
+
+CONFIGURE_ARGS = --with-xmlrpc-tinyxml2
 
 include ../../mk/spksrc.cross-cc.mk
-
-.PHONY: rtorrent_pre_configure
-rtorrent_pre_configure:
-	cp src/linux-atomic.c $(WORK_DIR)/$(PKG_DIR)/src
-
-.PHONY: rtorrent_pre_patch
-rtorrent_pre_patch:
-	@$(RUN) ./autogen.sh
-
-.PHONY: rtorrent_compile
-rtorrent_compile:
-	@$(RUN) ./libtool --tag=CC --mode=compile $(TC_PATH)$(TC_PREFIX)gcc -g -O2 -MT src/linux-atomic.lo -MD -MP -MF src/linux-atomic.Tpo -c -o src/linux-atomic.lo src/linux-atomic.c
-	@$(RUN) ./libtool --tag=CC --mode=link $(TC_PATH)$(TC_PREFIX)gcc -g -O2 -o src/liblinux-atomic.la src/linux-atomic.lo
-	@$(RUN) $(MAKE)

@@ -1,0 +1,20 @@
+TC_NAME = syno-armv7
+
+# generic toolchain for arm7hf DSM
+TC_ARCH = alpine alpine4k armada370 armada375 armada38x armadaxp comcerto2k monaco
+TC_VERS = 6.2.4
+TC_KERNEL = 3.10.105
+TC_GLIBC = 2.20
+TC_GCC = 4.9.3
+TC_BINUTILS = 2.25
+
+TC_DIST = armada38x-gcc493_glibc220_hard-GPL
+TC_DIST_SITE_PATH = toolchains%2Fdsm6.2.4
+
+TC_TARGET = arm-unknown-linux-gnueabi
+TC_SYSROOT = $(TC_TARGET)/sysroot
+
+# ensure gnu/hard-float.h is used
+TC_EXTRA_BUILD_FLAGS = -D__ARM_PCS_VFP=1
+
+include ../../mk/spksrc.toolchain.mk

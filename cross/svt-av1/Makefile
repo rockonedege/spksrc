@@ -1,11 +1,9 @@
 PKG_NAME = SVT-AV1
-PKG_VERS = 0.8.4
-PKG_EXT = tar.gz
-PKG_DIST_NAME = v$(PKG_VERS).$(PKG_EXT)
-PKG_DIST_SITE = https://github.com/OpenVisualCloud/SVT-AV1/archive
-PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
-# Set an appropriate filename as release files on github doesn't
-PKG_DIST_FILE = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
+PKG_VERS = 4.1.0
+PKG_EXT = tar.bz2
+PKG_DIST_NAME = $(PKG_NAME)-v$(PKG_VERS).$(PKG_EXT)
+PKG_DIST_SITE = https://gitlab.com/AOMediaCodec/SVT-AV1/-/archive/v$(PKG_VERS)/
+PKG_DIR = $(PKG_NAME)-v$(PKG_VERS)
 
 DEPENDS =
 
@@ -13,8 +11,29 @@ HOMEPAGE = https://github.com/OpenVisualCloud/SVT-AV1
 COMMENT  = The Scalable Video Technology for AV1 (SVT-AV1 Encoder and Decoder) is an AV1-compliant encoder/decoder library core.
 LICENSE  = SPDX short identifier: BSD-2-Clause-Patent
 
-UNSUPPORTED_ARCHS = $(ARM5_ARCHES) $(PPC_ARCHES)
+# Avoids ffmpeg to fail detecting SVT-AV1 on unresolved math synbols
+ADDITIONAL_LDFLAGS =  -lm
+POST_INSTALL_TARGET = svt-av1_post_install_target
 
-CMAKE_USE_NASM = 1
+# 64-bit only (its configure refuses 32-bit) and needs gcc >= 4.9
+REQUIRE_64BIT = 1
+MIN_GCC_VERSION = 4.9
 
 include ../../mk/spksrc.cross-cmake.mk
+
+# The AArch64 NEON code uses the multi-vector loads (vld1q_u8_x2, vld1q_s16_x4, ...), which
+# arm_neon.h declares from gcc 8: below it, the C code only.
+ifeq ($(findstring $(ARCH),$(ARMv8_ARCHS)),$(ARCH))
+ifeq ($(call version_lt, ${TC_GCC}, 8),1)
+CONFIGURE_ARGS += -DCOMPILE_C_ONLY=ON
+endif
+endif
+
+# GCC 4.9 has incomplete/broken AVX-512 intrinsics support
+ifeq ($(call version_lt, ${TC_GCC}, 5.0),1)
+  CONFIGURE_ARGS += -DENABLE_AVX512=OFF
+endif
+
+.PHONY: svt-av1_post_install_target
+svt-av1_post_install_target:
+	$(RUN) sed -i 's|^prefix=.*|prefix=$(STAGING_INSTALL_PREFIX)|' $(STAGING_INSTALL_PREFIX)/lib/pkgconfig/SvtAv1Enc.pc

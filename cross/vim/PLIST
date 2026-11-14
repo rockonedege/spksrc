@@ -1,9 +1,10 @@
-bin:bin/ex
-bin:bin/rview
-bin:bin/rvim
-bin:bin/view
+lnk:bin/ex
+lnk:bin/rview
+lnk:bin/rvim
+lnk:bin/view
 bin:bin/vim
-bin:bin/vimdiff
-bin:bin/xxd
+lnk:bin/vim@SPECIFIC_VERSION@
+lnk:bin/vimdiff
 rsc:bin/vimtutor
-rsc:share/vim
+bin:bin/xxd
+rsc:share/vim/

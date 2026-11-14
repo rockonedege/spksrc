@@ -1,11 +1,15 @@
 PKG_NAME = git
-PKG_VERS = 2.26.2
+PKG_VERS = 2.56.0
 PKG_EXT = tar.xz
 PKG_DIST_NAME = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
-PKG_DIST_SITE = https://kernel.org/pub/software/scm/$(PKG_NAME)
+PKG_DIST_SITE = https://kernel.org/pub/software/scm/git
 PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
 
-DEPENDS = cross/expat cross/zlib cross/openssl cross/libssh2 cross/curl
+DEPENDS = cross/libexpat cross/zlib cross/openssl3 cross/libssh2 cross/curl cross/pcre2
+
+# glibc 2.8 has no inotify_init1 (added in 2.9):
+#   fsm-listen-linux.c: undefined reference to `inotify_init1'
+MIN_GLIBC_VERSION = 2.9
 
 HOMEPAGE = https://git-scm.com
 COMMENT  = Git is a fast, scalable, distributed revision control system with an unusually rich command set that provides both high-level operations and full access to internals.
@@ -13,28 +17,36 @@ LICENSE  = GPLv2
 
 GNU_CONFIGURE = 1
 CONFIGURE_ARGS  = --without-tcltk --without-python
+# the following cannot be evaluated by running tests while cross compiling
+CONFIGURE_ARGS += ac_cv_iconv_omits_bom=no
 CONFIGURE_ARGS += ac_cv_fread_reads_directories=yes
 CONFIGURE_ARGS += ac_cv_snprintf_returns_bogus=no
-CONFIGURE_ARGS += ac_cv_iconv_omits_bom=no
 
-PRE_CONFIGURE_TARGET = git_pre_configure
-INSTALL_TARGET = git_install
+# Enable Perl-compatible regular expressions for git grep -P, git log --perl-regexp, etc.
+ADDITIONAL_CFLAGS = -DUSE_LIBPCRE2
+ADDITIONAL_LDFLAGS = -lpcre2-8
+
+# git (since version 2.35.0) requires C99 support (such as -std=c99, -std=gnu99, -std=c11 or -std=gnu11)
+# builds with -std=c99 do not run on 32 bit arm and ppc archs ("fatal: Cannot handle files this big"),
+# but -std=gnu99 works for those.
+ADDITIONAL_CPPFLAGS  = -std=gnu99
+ADDITIONAL_CPPFLAGS += -O
+
 POST_INSTALL_TARGET = git_post_install
+
+INSTALL_ARGS = install DESTDIR=$(INSTALL_DIR) prefix=$(INSTALL_PREFIX)
 
 # compiling needs access to curl-config from cross/curl
 ENV += PATH=$$PATH:$(STAGING_INSTALL_PREFIX)/bin
 
+# Rust is compiled by default since 2.55, but the cross toolchain has no cargo/rustc
+ENV += NO_RUST=1
 include ../../mk/spksrc.cross-cc.mk
-
-.PHONY: git_pre_configure
-git_pre_configure:
-	$(RUN) autoconf
-
-.PHONY: git_install
-git_install:
-	$(RUN) $(MAKE) install DESTDIR=$(INSTALL_DIR) prefix=$(INSTALL_PREFIX) NO_INSTALL_HARDLINKS=1
 
 .PHONY: git_post_install
 git_post_install:
-	install -m 755 -d $(STAGING_INSTALL_PREFIX)/etc
-	install -m 644 src/gitconfig $(STAGING_INSTALL_PREFIX)/etc/gitconfig
+	@$(MSG) Compile and install git-subtree
+	@$(RUN) $(MAKE) -C contrib/subtree/ $(INSTALL_ARGS)
+	@$(MSG) Install gitconfig
+	@install -m 755 -d $(STAGING_INSTALL_PREFIX)/etc
+	@install -m 644 src/gitconfig $(STAGING_INSTALL_PREFIX)/etc/gitconfig

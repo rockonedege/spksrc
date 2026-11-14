@@ -1,5 +1,8 @@
-bin:bin/domoticz
+bin:domoticz
 rsc:www
-rsc:Config
 rsc:scripts
-rsc:var
+rsc:plugins
+rsc:dzVents
+rsc:License.txt
+rsc:History.txt
+rsc:server_cert.pem

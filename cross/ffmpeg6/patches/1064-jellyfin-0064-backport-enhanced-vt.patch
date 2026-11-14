@@ -1,0 +1,559 @@
+--- libavcodec/hevc_parser.c
++++ libavcodec/hevc_parser.c
+@@ -278,6 +278,8 @@ static int hevc_find_frame_end(AVCodecParserContext *s, const uint8_t *buf,
+             (nut >= 41 && nut <= 44) || (nut >= 48 && nut <= 55)) {
+             if (pc->frame_start_found) {
+                 pc->frame_start_found = 0;
++                if (!((pc->state64 >> 6 * 8) & 0xFF))
++                    return i - 6;
+                 return i - 5;
+             }
+         } else if (nut <= HEVC_NAL_RASL_R ||
+@@ -288,6 +290,8 @@ static int hevc_find_frame_end(AVCodecParserContext *s, const uint8_t *buf,
+                     pc->frame_start_found = 1;
+                 } else { // First slice of next frame found
+                     pc->frame_start_found = 0;
++                    if (!((pc->state64 >> 6 * 8) & 0xFF))
++                        return i - 6;
+                     return i - 5;
+                 }
+             }
+--- libavcodec/videotoolbox.c
++++ libavcodec/videotoolbox.c
+@@ -78,8 +78,8 @@ int ff_videotoolbox_buffer_copy(VTContext *vtctx,
+     void *tmp;
+ 
+     tmp = av_fast_realloc(vtctx->bitstream,
+-                         &vtctx->allocated_size,
+-                         size);
++                          &vtctx->allocated_size,
++                          size);
+ 
+     if (!tmp)
+         return AVERROR(ENOMEM);
+@@ -549,6 +549,7 @@ static int videotoolbox_buffer_create(AVCodecContext *avctx, AVFrame *frame)
+         cached_frames->height != height) {
+         AVBufferRef *hw_frames_ctx = av_hwframe_ctx_alloc(cached_frames->device_ref);
+         AVHWFramesContext *hw_frames;
++        AVVTFramesContext *hw_ctx;
+         if (!hw_frames_ctx)
+             return AVERROR(ENOMEM);
+ 
+@@ -557,6 +558,8 @@ static int videotoolbox_buffer_create(AVCodecContext *avctx, AVFrame *frame)
+         hw_frames->sw_format = sw_format;
+         hw_frames->width = width;
+         hw_frames->height = height;
++        hw_ctx = hw_frames->hwctx;
++        hw_ctx->color_range = avctx->color_range;
+ 
+         ret = av_hwframe_ctx_init(hw_frames_ctx);
+         if (ret < 0) {
+@@ -872,44 +875,44 @@ static int videotoolbox_start(AVCodecContext *avctx)
+     }
+ 
+     switch( avctx->codec_id ) {
+-    case AV_CODEC_ID_H263 :
+-        videotoolbox->cm_codec_type = kCMVideoCodecType_H263;
+-        break;
+-    case AV_CODEC_ID_H264 :
+-        videotoolbox->cm_codec_type = kCMVideoCodecType_H264;
+-        break;
+-    case AV_CODEC_ID_HEVC :
+-        videotoolbox->cm_codec_type = kCMVideoCodecType_HEVC;
+-        break;
+-    case AV_CODEC_ID_MPEG1VIDEO :
+-        videotoolbox->cm_codec_type = kCMVideoCodecType_MPEG1Video;
+-        break;
+-    case AV_CODEC_ID_MPEG2VIDEO :
+-        videotoolbox->cm_codec_type = kCMVideoCodecType_MPEG2Video;
+-        break;
+-    case AV_CODEC_ID_MPEG4 :
+-        videotoolbox->cm_codec_type = kCMVideoCodecType_MPEG4Video;
+-        break;
+-    case AV_CODEC_ID_PRORES :
+-        switch (avctx->codec_tag) {
+-        default:
+-            av_log(avctx, AV_LOG_WARNING, "Unknown prores profile %d\n", avctx->codec_tag);
+-        // fall-through
+-        case MKTAG('a','p','c','o'): // kCMVideoCodecType_AppleProRes422Proxy
+-        case MKTAG('a','p','c','s'): // kCMVideoCodecType_AppleProRes422LT
+-        case MKTAG('a','p','c','n'): // kCMVideoCodecType_AppleProRes422
+-        case MKTAG('a','p','c','h'): // kCMVideoCodecType_AppleProRes422HQ
+-        case MKTAG('a','p','4','h'): // kCMVideoCodecType_AppleProRes4444
+-        case MKTAG('a','p','4','x'): // kCMVideoCodecType_AppleProRes4444XQ
+-            videotoolbox->cm_codec_type = av_bswap32(avctx->codec_tag);
++        case AV_CODEC_ID_H263 :
++            videotoolbox->cm_codec_type = kCMVideoCodecType_H263;
++            break;
++        case AV_CODEC_ID_H264 :
++            videotoolbox->cm_codec_type = kCMVideoCodecType_H264;
++            break;
++        case AV_CODEC_ID_HEVC :
++            videotoolbox->cm_codec_type = kCMVideoCodecType_HEVC;
++            break;
++        case AV_CODEC_ID_MPEG1VIDEO :
++            videotoolbox->cm_codec_type = kCMVideoCodecType_MPEG1Video;
++            break;
++        case AV_CODEC_ID_MPEG2VIDEO :
++            videotoolbox->cm_codec_type = kCMVideoCodecType_MPEG2Video;
++            break;
++        case AV_CODEC_ID_MPEG4 :
++            videotoolbox->cm_codec_type = kCMVideoCodecType_MPEG4Video;
++            break;
++        case AV_CODEC_ID_PRORES :
++            switch (avctx->codec_tag) {
++                default:
++                    av_log(avctx, AV_LOG_WARNING, "Unknown prores profile %d\n", avctx->codec_tag);
++                    // fall-through
++                case MKTAG('a','p','c','o'): // kCMVideoCodecType_AppleProRes422Proxy
++                case MKTAG('a','p','c','s'): // kCMVideoCodecType_AppleProRes422LT
++                case MKTAG('a','p','c','n'): // kCMVideoCodecType_AppleProRes422
++                case MKTAG('a','p','c','h'): // kCMVideoCodecType_AppleProRes422HQ
++                case MKTAG('a','p','4','h'): // kCMVideoCodecType_AppleProRes4444
++                case MKTAG('a','p','4','x'): // kCMVideoCodecType_AppleProRes4444XQ
++                    videotoolbox->cm_codec_type = av_bswap32(avctx->codec_tag);
++                    break;
++            }
++            break;
++        case AV_CODEC_ID_VP9 :
++            videotoolbox->cm_codec_type = kCMVideoCodecType_VP9;
++            break;
++        default :
+             break;
+-        }
+-        break;
+-    case AV_CODEC_ID_VP9 :
+-        videotoolbox->cm_codec_type = kCMVideoCodecType_VP9;
+-        break;
+-    default :
+-        break;
+     }
+ 
+ #if defined(MAC_OS_X_VERSION_10_9) && !TARGET_OS_IPHONE && (MAC_OS_X_VERSION_MAX_ALLOWED >= MAC_OS_X_VERSION_10_9) && AV_HAS_BUILTIN(__builtin_available)
+@@ -966,24 +969,24 @@ static int videotoolbox_start(AVCodecContext *avctx)
+ 
+     switch (status) {
+     case kVTVideoDecoderNotAvailableNowErr:
+-        av_log(avctx, AV_LOG_VERBOSE, "VideoToolbox session not available.\n");
++        av_log(avctx, AV_LOG_ERROR, "VideoToolbox session not available.\n");
+         return AVERROR(ENOSYS);
+     case kVTVideoDecoderUnsupportedDataFormatErr:
+-        av_log(avctx, AV_LOG_VERBOSE, "VideoToolbox does not support this format.\n");
++        av_log(avctx, AV_LOG_ERROR, "VideoToolbox does not support this format.\n");
+         return AVERROR(ENOSYS);
+     case kVTCouldNotFindVideoDecoderErr:
+-        av_log(avctx, AV_LOG_VERBOSE, "VideoToolbox decoder for this format not found.\n");
++        av_log(avctx, AV_LOG_ERROR, "VideoToolbox decoder for this format not found.\n");
+         return AVERROR(ENOSYS);
+     case kVTVideoDecoderMalfunctionErr:
+-        av_log(avctx, AV_LOG_VERBOSE, "VideoToolbox malfunction.\n");
++        av_log(avctx, AV_LOG_ERROR, "VideoToolbox malfunction.\n");
+         return AVERROR(EINVAL);
+     case kVTVideoDecoderBadDataErr:
+-        av_log(avctx, AV_LOG_VERBOSE, "VideoToolbox reported invalid data.\n");
++        av_log(avctx, AV_LOG_ERROR, "VideoToolbox reported invalid data.\n");
+         return AVERROR_INVALIDDATA;
+     case 0:
+         return 0;
+     default:
+-        av_log(avctx, AV_LOG_VERBOSE, "Unknown VideoToolbox session creation error %d\n", (int)status);
++        av_log(avctx, AV_LOG_ERROR, "Unknown VideoToolbox session creation error %d\n", (int)status);
+         return AVERROR_UNKNOWN;
+     }
+ }
+@@ -1110,15 +1113,15 @@ static int videotoolbox_mpeg_end_frame(AVCodecContext *avctx)
+ }
+ 
+ static int videotoolbox_prores_start_frame(AVCodecContext *avctx,
+-                                         const uint8_t *buffer,
+-                                         uint32_t size)
++                                           const uint8_t *buffer,
++                                           uint32_t size)
+ {
+     return 0;
+ }
+ 
+ static int videotoolbox_prores_decode_slice(AVCodecContext *avctx,
+-                                          const uint8_t *buffer,
+-                                          uint32_t size)
++                                            const uint8_t *buffer,
++                                            uint32_t size)
+ {
+     VTContext *vtctx = avctx->internal->hwaccel_priv_data;
+ 
+@@ -1197,6 +1200,7 @@ int ff_videotoolbox_common_init(AVCodecContext *avctx)
+ {
+     VTContext *vtctx = avctx->internal->hwaccel_priv_data;
+     AVHWFramesContext *hw_frames;
++    AVVTFramesContext *hw_ctx;
+     int err;
+     bool full_range;
+ 
+@@ -1232,6 +1236,8 @@ int ff_videotoolbox_common_init(AVCodecContext *avctx)
+         hw_frames->sw_format = videotoolbox_best_pixel_format(avctx);
+         hw_frames->width = avctx->width;
+         hw_frames->height = avctx->height;
++        hw_ctx = hw_frames->hwctx;
++        hw_ctx->color_range = avctx->color_range;
+ 
+         err = av_hwframe_ctx_init(avctx->hw_frames_ctx);
+         if (err < 0) {
+@@ -1267,7 +1273,7 @@ int ff_videotoolbox_common_init(AVCodecContext *avctx)
+ 
+     return 0;
+ 
+-fail:
++    fail:
+     ff_videotoolbox_uninit(avctx);
+     return err;
+ }
+--- libavcodec/videotoolboxenc.c
++++ libavcodec/videotoolboxenc.c
+@@ -119,6 +119,7 @@ static struct{
+     CFStringRef kVTCompressionPropertyKey_TargetQualityForAlpha;
+     CFStringRef kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality;
+     CFStringRef kVTCompressionPropertyKey_ConstantBitRate;
++    CFStringRef kVTCompressionPropertyKey_EncoderID;
+ 
+     CFStringRef kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder;
+     CFStringRef kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder;
+@@ -191,6 +192,7 @@ static void loadVTEncSymbols(void){
+     GET_SYM(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+             "PrioritizeEncodingSpeedOverQuality");
+     GET_SYM(kVTCompressionPropertyKey_ConstantBitRate, "ConstantBitRate");
++    GET_SYM(kVTCompressionPropertyKey_EncoderID, "EncoderID");
+ 
+     GET_SYM(kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder,
+             "EnableHardwareAcceleratedVideoEncoder");
+@@ -278,6 +280,41 @@ typedef struct VTEncContext {
+     int max_ref_frames;
+ } VTEncContext;
+ 
++static int vt_dump_encoder(AVCodecContext *avctx)
++{
++    VTEncContext *vtctx = avctx->priv_data;
++    CFStringRef encoder_id = NULL;
++    int status;
++    CFIndex length, max_size;
++    char *name;
++
++    status = VTSessionCopyProperty(vtctx->session,
++                                   compat_keys.kVTCompressionPropertyKey_EncoderID,
++                                   kCFAllocatorDefault,
++                                   &encoder_id);
++    // OK if not supported
++    if (status != noErr)
++        return 0;
++
++    length = CFStringGetLength(encoder_id);
++    max_size = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8);
++    name = av_malloc(max_size);
++    if (!name) {
++        CFRelease(encoder_id);
++        return AVERROR(ENOMEM);
++    }
++
++    CFStringGetCString(encoder_id,
++                       name,
++                       max_size,
++                       kCFStringEncodingUTF8);
++    av_log(avctx, AV_LOG_DEBUG, "Init the encoder: %s\n", name);
++    av_freep(&name);
++    CFRelease(encoder_id);
++
++    return 0;
++}
++
+ static int vtenc_populate_extradata(AVCodecContext   *avctx,
+                                     CMVideoCodecType codec_type,
+                                     CFStringRef      profile_level,
+@@ -484,6 +521,8 @@ static CMVideoCodecType get_cm_codec_type(AVCodecContext *avctx,
+         }
+         return kCMVideoCodecType_HEVC;
+     case AV_CODEC_ID_PRORES:
++        if (desc && (desc->flags & AV_PIX_FMT_FLAG_ALPHA))
++            avctx->bits_per_coded_sample = 32;
+         switch (profile) {
+         case AV_PROFILE_PRORES_PROXY:
+             return MKBETAG('a','p','c','o'); // kCMVideoCodecType_AppleProRes422Proxy
+@@ -953,9 +992,9 @@ static int get_cv_pixel_format(AVCodecContext* avctx,
+ 
+     range_name = av_color_range_name(range);
+     av_log(avctx, AV_LOG_ERROR,
+-        "Could not get pixel format for color format '%s' range '%s'.\n",
+-        av_get_pix_fmt_name(fmt),
+-        range_name ? range_name : "Unknown");
++           "Could not get pixel format for color format '%s' range '%s'.\n",
++           av_get_pix_fmt_name(fmt),
++           range_name ? range_name : "Unknown");
+ 
+     return AVERROR(EINVAL);
+ }
+@@ -998,10 +1037,10 @@ static int create_cv_pixel_buffer_info(AVCodecContext* avctx,
+     if (status) return status;
+ 
+     pixel_buffer_info = CFDictionaryCreateMutable(
+-                            kCFAllocatorDefault,
+-                            20,
+-                            &kCFCopyStringDictionaryKeyCallBacks,
+-                            &kCFTypeDictionaryValueCallBacks);
++        kCFAllocatorDefault,
++        20,
++        &kCFCopyStringDictionaryKeyCallBacks,
++        &kCFTypeDictionaryValueCallBacks);
+ 
+     if (!pixel_buffer_info) goto pbinfo_nomem;
+ 
+@@ -1040,7 +1079,7 @@ static int create_cv_pixel_buffer_info(AVCodecContext* avctx,
+     *dict = pixel_buffer_info;
+     return 0;
+ 
+-pbinfo_nomem:
++    pbinfo_nomem:
+     vt_release_num(&cv_color_format_num);
+     vt_release_num(&width_num);
+     vt_release_num(&height_num);
+@@ -1174,33 +1213,9 @@ static int vtenc_create_encoder(AVCodecContext   *avctx,
+     }
+ #endif
+ 
+-    // Dump the init encoder
+-    {
+-        CFStringRef encoderID = NULL;
+-        status = VTSessionCopyProperty(vtctx->session,
+-                                       kVTCompressionPropertyKey_EncoderID,
+-                                       kCFAllocatorDefault,
+-                                       &encoderID);
+-        if (status == noErr) {
+-            CFIndex length   = CFStringGetLength(encoderID);
+-            CFIndex max_size = CFStringGetMaximumSizeForEncoding(length, kCFStringEncodingUTF8);
+-            char *name       = av_malloc(max_size);
+-            if (!name) {
+-                CFRelease(encoderID);
+-                return AVERROR(ENOMEM);
+-            }
+-
+-            CFStringGetCString(encoderID,
+-                               name,
+-                               max_size,
+-                               kCFStringEncodingUTF8);
+-            av_log(avctx, AV_LOG_DEBUG, "Init the encoder: %s\n", name);
+-
+-            av_freep(&name);
+-        }
+-        if (encoderID != NULL)
+-            CFRelease(encoderID);
+-    }
++    status = vt_dump_encoder(avctx);
++    if (status < 0)
++        return status;
+ 
+     if (avctx->flags & AV_CODEC_FLAG_QSCALE && !vtenc_qscale_enabled()) {
+         av_log(avctx, AV_LOG_ERROR, "Error: -q:v qscale not available for encoder. Use -b:v bitrate instead.\n");
+@@ -1256,7 +1271,7 @@ static int vtenc_create_encoder(AVCodecContext   *avctx,
+     }
+ 
+     if ((vtctx->codec_id == AV_CODEC_ID_H264 || vtctx->codec_id == AV_CODEC_ID_HEVC)
+-            && max_rate > 0) {
++        && max_rate > 0) {
+         bytes_per_second_value = max_rate >> 3;
+         bytes_per_second = CFNumberCreate(kCFAllocatorDefault,
+                                           kCFNumberSInt64Type,
+@@ -1382,7 +1397,7 @@ static int vtenc_create_encoder(AVCodecContext   *avctx,
+         AVRational *avpar = &avctx->sample_aspect_ratio;
+ 
+         av_reduce(&avpar->num, &avpar->den,
+-                   avpar->num,  avpar->den,
++                  avpar->num,  avpar->den,
+                   0xFFFFFFFF);
+ 
+         num = CFNumberCreate(kCFAllocatorDefault,
+@@ -1494,8 +1509,8 @@ static int vtenc_create_encoder(AVCodecContext   *avctx,
+ 
+     if (vtctx->entropy != VT_ENTROPY_NOT_SET) {
+         CFStringRef entropy = vtctx->entropy == VT_CABAC ?
+-                                compat_keys.kVTH264EntropyMode_CABAC:
+-                                compat_keys.kVTH264EntropyMode_CAVLC;
++                              compat_keys.kVTH264EntropyMode_CABAC:
++                              compat_keys.kVTH264EntropyMode_CAVLC;
+ 
+         status = VTSessionSetProperty(vtctx->session,
+                                       compat_keys.kVTCompressionPropertyKey_H264EntropyMode,
+@@ -1700,7 +1715,7 @@ static int vtenc_configure_encoder(AVCodecContext *avctx)
+                                   vtctx->constant_bit_rate,
+                                   &vtctx->session);
+ 
+-init_cleanup:
++    init_cleanup:
+     if (gamma_level)
+         CFRelease(gamma_level);
+ 
+@@ -2289,7 +2304,7 @@ static int get_cv_pixel_info(
+     const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(avctx->pix_fmt);
+     VTEncContext *vtctx = avctx->priv_data;
+     int av_format       = frame->format;
+-    int av_color_range  = frame->color_range;
++    int av_color_range  = avctx->color_range;
+     int i;
+     int range_guessed;
+     int status;
+@@ -2372,8 +2387,8 @@ static int copy_avframe_to_pixel_buffer(AVCodecContext   *avctx,
+             if (i == plane_count) {
+                 CVPixelBufferUnlockBaseAddress(cv_img, 0);
+                 av_log(avctx,
+-                    AV_LOG_ERROR,
+-                    "Error: different number of planes in AVFrame and CVPixelBuffer.\n"
++                       AV_LOG_ERROR,
++                       "Error: different number of planes in AVFrame and CVPixelBuffer.\n"
+                 );
+ 
+                 return AVERROR_EXTERNAL;
+@@ -2399,8 +2414,8 @@ static int copy_avframe_to_pixel_buffer(AVCodecContext   *avctx,
+         if (frame->data[1]) {
+             CVPixelBufferUnlockBaseAddress(cv_img, 0);
+             av_log(avctx,
+-                AV_LOG_ERROR,
+-                "Error: different number of planes in AVFrame and non-planar CVPixelBuffer.\n"
++                   AV_LOG_ERROR,
++                   "Error: different number of planes in AVFrame and non-planar CVPixelBuffer.\n"
+             );
+ 
+             return AVERROR_EXTERNAL;
+@@ -2506,7 +2521,7 @@ static int create_cv_pixel_buffer(AVCodecContext   *avctx,
+         }
+         else
+             av_log(avctx, AV_LOG_WARNING, "VT session restarted because of a "
+-                   "kVTInvalidSessionErr error.\n");
++                                          "kVTInvalidSessionErr error.\n");
+     }
+ 
+     status = CVPixelBufferPoolCreatePixelBuffer(NULL,
+@@ -2665,7 +2680,7 @@ static av_cold int vtenc_frame(
+     *got_packet = 1;
+     return 0;
+ 
+-end_nopkt:
++    end_nopkt:
+     av_packet_unref(pkt);
+     return status;
+ }
+--- libavutil/hwcontext_videotoolbox.c
++++ libavutil/hwcontext_videotoolbox.c
+@@ -43,6 +43,7 @@ static const struct {
+     enum AVPixelFormat pix_fmt;
+ } cv_pix_fmts[] = {
+     { kCVPixelFormatType_420YpCbCr8Planar,              false, AV_PIX_FMT_YUV420P },
++    { kCVPixelFormatType_420YpCbCr8PlanarFullRange,     true,  AV_PIX_FMT_YUV420P },
+     { kCVPixelFormatType_422YpCbCr8,                    false, AV_PIX_FMT_UYVY422 },
+     { kCVPixelFormatType_32BGRA,                        true,  AV_PIX_FMT_BGRA },
+ #ifdef kCFCoreFoundationVersionNumber10_7
+@@ -144,6 +145,25 @@ enum AVPixelFormat av_map_videotoolbox_format_to_pixfmt(uint32_t cv_fmt)
+     return AV_PIX_FMT_NONE;
+ }
+ 
++static uint32_t vt_format_from_pixfmt(enum AVPixelFormat pix_fmt,
++                                      enum AVColorRange range)
++{
++    for (int i = 0; i < FF_ARRAY_ELEMS(cv_pix_fmts); i++) {
++        if (cv_pix_fmts[i].pix_fmt == pix_fmt) {
++            int full_range = (range == AVCOL_RANGE_JPEG);
++
++            // Don't care if unspecified
++            if (range == AVCOL_RANGE_UNSPECIFIED)
++                return cv_pix_fmts[i].cv_fmt;
++
++            if (cv_pix_fmts[i].full_range == full_range)
++                return cv_pix_fmts[i].cv_fmt;
++        }
++    }
++
++    return 0;
++}
++
+ uint32_t av_map_videotoolbox_format_from_pixfmt(enum AVPixelFormat pix_fmt)
+ {
+     return av_map_videotoolbox_format_from_pixfmt2(pix_fmt, false);
+@@ -151,12 +171,7 @@ uint32_t av_map_videotoolbox_format_from_pixfmt(enum AVPixelFormat pix_fmt)
+ 
+ uint32_t av_map_videotoolbox_format_from_pixfmt2(enum AVPixelFormat pix_fmt, bool full_range)
+ {
+-    int i;
+-    for (i = 0; i < FF_ARRAY_ELEMS(cv_pix_fmts); i++) {
+-        if (cv_pix_fmts[i].pix_fmt == pix_fmt && cv_pix_fmts[i].full_range == full_range)
+-            return cv_pix_fmts[i].cv_fmt;
+-    }
+-    return 0;
++    return vt_format_from_pixfmt(pix_fmt, full_range ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG);
+ }
+ 
+ static int vt_pool_alloc(AVHWFramesContext *ctx)
+@@ -166,6 +181,7 @@ static int vt_pool_alloc(AVHWFramesContext *ctx)
+     CFNumberRef w, h, pixfmt;
+     uint32_t cv_pixfmt;
+     CFMutableDictionaryRef attributes, iosurface_properties;
++    AVVTFramesContext *hw_ctx = ctx->hwctx;
+ 
+     attributes = CFDictionaryCreateMutable(
+         NULL,
+@@ -173,7 +189,7 @@ static int vt_pool_alloc(AVHWFramesContext *ctx)
+         &kCFTypeDictionaryKeyCallBacks,
+         &kCFTypeDictionaryValueCallBacks);
+ 
+-    cv_pixfmt = av_map_videotoolbox_format_from_pixfmt(ctx->sw_format);
++    cv_pixfmt = vt_format_from_pixfmt(ctx->sw_format, hw_ctx->color_range);
+     pixfmt = CFNumberCreate(NULL, kCFNumberSInt32Type, &cv_pixfmt);
+     CFDictionarySetValue(
+         attributes,
+@@ -743,6 +759,14 @@ static int vt_device_create(AVHWDeviceContext *ctx, const char *device,
+     return 0;
+ }
+ 
++static int vt_device_derive(AVHWDeviceContext *device_ctx,
++                            AVHWDeviceContext *src_ctx, AVDictionary *opts,
++                            int flags)
++{
++    // There is no context to be setup with VT, just return.
++    return 0;
++}
++
+ const HWContextType ff_hwcontext_type_videotoolbox = {
+     .type                 = AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+     .name                 = "videotoolbox",
+@@ -750,6 +774,8 @@ const HWContextType ff_hwcontext_type_videotoolbox = {
+     .frames_priv_size     = sizeof(VTFramesContext),
+ 
+     .device_create        = vt_device_create,
++    .device_derive        = vt_device_derive,
++    .frames_hwctx_size    = sizeof(AVVTFramesContext),
+     .frames_init          = vt_frames_init,
+     .frames_get_buffer    = vt_get_buffer,
+     .frames_get_constraints = vt_frames_get_constraints,
+--- libavutil/hwcontext_videotoolbox.h
++++ libavutil/hwcontext_videotoolbox.h
+@@ -39,10 +39,13 @@
+  * depending on application usage, so it is preferable to let CoreVideo manage
+  * the pool using the default implementation.
+  *
+- * Currently AVHWDeviceContext.hwctx and AVHWFramesContext.hwctx are always
+- * NULL.
++ * Currently AVHWDeviceContext.hwctx are always NULL.
+  */
+ 
++typedef struct AVVTFramesContext {
++    enum AVColorRange color_range;
++} AVVTFramesContext;
++
+ /**
+  * Convert a VideoToolbox (actually CoreVideo) format to AVPixelFormat.
+  * Returns AV_PIX_FMT_NONE if no known equivalent was found.
+--- tests/fate/hevc.mak
++++ tests/fate/hevc.mak
+@@ -222,7 +222,7 @@ FATE_HEVC-$(call ALLYES, HEVC_DEMUXER MOV_DEMUXER HEVC_PARSER HEVC_MP4TOANNEXB_B
+ fate-hevc-bsf-mp4toannexb: tests/data/hevc-mp4.mov
+ fate-hevc-bsf-mp4toannexb: CMD = md5 -i $(TARGET_PATH)/tests/data/hevc-mp4.mov -c:v copy -fflags +bitexact -f hevc
+ fate-hevc-bsf-mp4toannexb: CMP = oneline
+-fate-hevc-bsf-mp4toannexb: REF = 1873662a3af1848c37e4eb25722c8df9
++fate-hevc-bsf-mp4toannexb: REF = 7d05a79c7a6665ae22c0043a4d83a811
+ 
+ fate-hevc-skiploopfilter: CMD = framemd5 -skip_loop_filter nokey -i $(TARGET_SAMPLES)/hevc-conformance/SAO_D_Samsung_5.bit -sws_flags bitexact
+ FATE_HEVC-$(call FRAMEMD5, HEVC, HEVC, HEVC_PARSER) += fate-hevc-skiploopfilter

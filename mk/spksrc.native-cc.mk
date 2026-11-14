@@ -1,11 +1,11 @@
-# Common makefiles
-include ../../mk/spksrc.common.mk
-include ../../mk/spksrc.directories.mk
+###############################################################################
+# spksrc.native-cc.mk
+#
+# Default NATIVE make programs
+#
+###############################################################################
 
-# Force build in native tool directrory, not cross directory.
-WORK_DIR := $(PWD)/work-native
-
-# Package dependend
+# Package dependent
 URLS          = $(PKG_DIST_SITE)/$(PKG_DIST_NAME)
 NAME          = $(PKG_NAME)
 COOKIE_PREFIX = $(PKG_NAME)-
@@ -16,48 +16,65 @@ LOCAL_FILE    = $(PKG_DIST_NAME)
 endif
 DIST_FILE     = $(DISTRIB_DIR)/$(LOCAL_FILE)
 DIST_EXT      = $(PKG_EXT)
+ARCH_SUFFIX  := -native
+
+# Setup common directories
+
+# Common makefiles
+include ../../mk/spksrc.common.mk
 
 #####
 
-include ../../mk/spksrc.native-env.mk
+.NOTPARALLEL:
 
-include ../../mk/spksrc.download.mk
+#####
 
-include ../../mk/spksrc.depend.mk
+include ../../mk/spksrc.native/env-default.mk
 
-checksum: download
-include ../../mk/spksrc.checksum.mk
+include ../../mk/spksrc.rules/dependency.mk
 
-extract: checksum depend
-include ../../mk/spksrc.extract.mk
+include ../../mk/spksrc.rules/status.mk
 
-patch: extract
-include ../../mk/spksrc.patch.mk
+# Standard build pipeline (download -> ... -> install)
+include ../../mk/spksrc.build.mk
 
-configure: patch
-include ../../mk/spksrc.configure.mk
-
-compile: configure
-include ../../mk/spksrc.compile.mk
-
-install: compile
-include ../../mk/spksrc.install.mk
+###
 
 .PHONY: cat_PLIST
 cat_PLIST:
 	@true
 
+###
 
-### Clean rules
-clean:
-	rm -fr $(WORK_DIR)
+# Define _all as a real target that does the work. 'archive' runs after install
+# and is a no-op unless the package declares ARCHIVE_NAME (see
+# spksrc.build/archive.mk).
+.PHONY: _all
+_all: install archive
 
-all: install
+# all wraps _all with logging
+.PHONY: all
+.DEFAULT_GOAL := all
 
-### For make digests
-include ../../mk/spksrc.generate-digests.mk
-
-### For make dependency-tree
-include ../../mk/spksrc.dependency-tree.mk
+all:
+	@mkdir -p $(WORK_DIR)
+	$(call RUNLOG,_all)
 
 ####
+
+### Include common rules
+include ../../mk/spksrc.rules.mk
+
+# nativeclean -- like spkclean: re-run every step next make, keeping the work dir.
+# Only the master package's cookies, listed (not a glob): a shared-work-dir dep
+# whose name extends this one's (llvm -> llvm-140) must keep its own.
+.PHONY: nativeclean
+nativeclean:
+	rm -f $(DOWNLOAD_COOKIE) $(CHECKSUM_COOKIE) $(EXTRACT_COOKIE) $(PATCH_COOKIE) \
+	      $(DEPENDENCY_COOKIE) $(CONFIGURE_COOKIE) $(COMPILE_COOKIE) $(INSTALL_COOKIE) \
+	      $(STATUS_COOKIE) $(ARCHIVE_COOKIE)
+
+### Optional archive packaging (build-archive); no-op unless ARCHIVE is set
+include ../../mk/spksrc.build/archive.mk
+
+###

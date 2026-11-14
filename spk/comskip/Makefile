@@ -1,46 +1,30 @@
 SPK_NAME = comskip
-SPK_VERS = 0.82.010
-SPK_REV = 4
+SPK_VERS = 0.83
+SPK_REV = 16
 SPK_ICON = src/comskip.png
 
-REQUIRED_DSM = 5.2
+FFMPEG_PACKAGE = ffmpeg8
 
-DEPENDS = cross/$(SPK_NAME)
+DEPENDS = cross/comskip
 
 STARTABLE = no
 
-MAINTAINER = schumi2004
+MAINTAINER = SynoCommunity
 DESCRIPTION = Comskip is a free mpeg commercial detector. Read the wiki on how to use and configure it.
 DISPLAY_NAME = Comskip
-CHANGELOG = "1. Update to ffmpeg 4.2.4"
+CHANGELOG = "1. Update to FFMPEG 8.1.3"
 
-HOMEPAGE = http://www.kaashoek.com/comskip/
-LICENSE = GNU/LGPL
-HELPURL = https://github.com/SynoCommunity/spksrc/wiki/Comskip
-SUPPORTURL = http://www.kaashoek.com/comskip/
+HOMEPAGE = https://www.kaashoek.com/comskip/
+LICENSE = LGPL
+HELPURL = https://docs.synocommunity.com/packages/comskip/
 
 SPK_COMMANDS = bin/comskip
 
 POST_STRIP_TARGET = comskip_extra_install
 
-include ../../mk/spksrc.common.mk
+include ../../mk/spksrc.spk-meta.mk
 
-# Reuse FFmpeg libraries
-export FFMPEG_DIR = $(shell pwd)/../ffmpeg/work-$(ARCH)-$(TCVERSION)/install/var/packages/ffmpeg/target
-
-ifneq ($(wildcard $(FFMPEG_DIR)),)
-PRE_DEPEND_TARGET = comskip_pre_depend
-SPK_DEPENDS = "ffmpeg>4.2"
-endif
-
-include ../../mk/spksrc.spk.mk
-
-.PHONY: comskip_pre_depend comskip_extra_install
-
-FFMPEG_LIBS = libswresample.pc libavutil.pc libavformat.pc libavcodec.pc
-comskip_pre_depend:
-	mkdir -p $(STAGING_INSTALL_PREFIX)/lib/pkgconfig/
-	$(foreach lib,$(FFMPEG_LIBS),ln -sf $(FFMPEG_DIR)/lib/pkgconfig/$(lib) $(STAGING_INSTALL_PREFIX)/lib/pkgconfig/ ;)
+.PHONY: comskip_extra_install
 
 comskip_extra_install:
 	install -m 755 -d $(STAGING_DIR)/var

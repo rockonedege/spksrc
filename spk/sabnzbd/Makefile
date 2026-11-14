@@ -1,32 +1,37 @@
 SPK_NAME = sabnzbd
-SPK_VERS = 3.0.2
-SPK_REV = 43
+SPK_VERS = 5.1.3
+SPK_REV = 84
 SPK_ICON = src/sabnzbd.png
 
-BUILD_DEPENDS = cross/python3 cross/setuptools cross/pip cross/wheel
-DEPENDS = cross/busybox cross/par2cmdline cross/unrar cross/p7zip cross/$(SPK_NAME)
-SPK_DEPENDS = "python3>=3.7.7-12"
+PYTHON_PACKAGE = python314
 
-# To generate full requirements.txt, extend SABnzbd's own
-# requirements.txt with the depedencies of cherrypy and cheroot
-WHEELS = src/requirements.txt
+DEPENDS  = cross/ionice
+DEPENDS += cross/coreutils
+DEPENDS += cross/par2cmdline-turbo
+DEPENDS += cross/7zz
+DEPENDS += cross/sabnzbd
+DEPENDS += cross/unrar
+
+# Ensure C++17 compatibility -- sabctools >= 9.0.0 -> -std=c++17 >= gcc-7
+MIN_GCC_VERSION = 7
+
+WHEELS = src/requirements-crossenv.txt src/requirements-pure.txt
 
 MAINTAINER = Safihre
 DESCRIPTION = SABnzbd makes Usenet as simple and streamlined as possible by automating everything we can. All you have to do is add an .nzb. SABnzbd takes over from there, where it will be automatically downloaded, verified, repaired, extracted and filed away with zero human interaction.
 DESCRIPTION_FRE = SABnzbd rend Usenet aussi simple et automatisé que possible. Vous n\'avez qu\'a ajouter un .nzb, SABnzbd s\'occupera du reste sans aucune intervention de votre part : téléchargement, vérification, réparation, extraction et déplacement.
 DESCRIPTION_SPN = SABnzbd hace que Usenet sea lo más simple posible, automatizando todo lo que se puede. Todo lo que tienes que hacer es agregar un archivo .nzb. SABnzbd empieza desde ahí. Tus archivos serán automáticamente descargados, verificados, reparados, descomprimidos y archivados.
-RELOAD_UI = yes
 DISPLAY_NAME = SABnzbd
 STARTABLE = yes
-CHANGELOG = "Update SABnzbd to 3.0.2. Please note that SABnzbd now runs on Python 3. Make sure your post/pre-processing scripts work with Python 3!"
+CHANGELOG = "1. Update SABnzbd to 5.1.3. <br/>2. Fixes an unauthenticated API access vulnerability (GHSA-q326-jpxx-jmjc) and a PAR2 symlink remote code execution vulnerability (GHSA-mjwj-v5mr-cmcg); see https://sabnzbd.org/5-1-vulnerabilities."
 
-HOMEPAGE  = http://sabnzbd.org
+HOMEPAGE  = https://sabnzbd.org
 LICENSE   = GPL
 
 WIZARDS_DIR = src/wizard/
 
 SERVICE_USER = auto
-SERVICE_WIZARD_SHARE = wizard_download_dir
+SERVICE_WIZARD_SHARENAME = wizard_shared_folder_name
 SERVICE_SETUP = src/service-setup.sh
 SERVICE_PORT = 8080
 SERVICE_PORT_TITLE = $(DISPLAY_NAME)
@@ -34,18 +39,40 @@ SERVICE_PORT_TITLE = $(DISPLAY_NAME)
 # Admin link for in DSM UI
 ADMIN_PORT = $(SERVICE_PORT)
 
+include ../../mk/spksrc.common.mk
+
 POST_STRIP_TARGET = sabnzbd_extra_install
 
-BUSYBOX_CONFIG = nice
-# Add ionice for ARCHs that support it
-ifeq ($(findstring $(ARCH),88f6281 qoriq),$(ARCH))
-BUSYBOX_CONFIG += ionice
-endif
-ENV += BUSYBOX_CONFIG="$(BUSYBOX_CONFIG)"
+SPK_COMMANDS = bin/7zz
 
-include ../../mk/spksrc.spk.mk
+# [cryptography]
+# Version = 45.0.0 requires rustc >= 1.74.0 (qoriq)
+# Version = 47.0.0 requires rustc >= 1.83.0
+DEPENDS += cross/openssl3
+ifeq ($(findstring $(ARCH),$(PPC_ARCHS)),$(ARCH))
+WHEELS += cryptography==46.0.7
+else
+WHEELS += cryptography==48.0.1
+endif
+
+# [orjson]
+# Version = 3.11.1 requires rustc >= 1.82 (qoriq)
+# Version = 3.11.2 requires rustc >= 1.85
+# Version = 3.11.6 requires rustc >= 1.89
+# Version = 3.11.9 requires rustc >= 1.95
+ifeq ($(findstring $(ARCH),$(PPC_ARCHS)),$(ARCH))
+WHEELS += orjson==3.11.1
+else
+WHEELS += orjson==3.11.9
+endif
+
+include ../../mk/spksrc.spk-meta.mk
+
+# prefer native python tools (pip, maturin, ...) used for orjson
+ENV += PATH=$(realpath $(WORK_DIR)/../../../native/$(PYTHON_PACKAGE)/work-native/install/usr/local/bin):$(PATH)
 
 .PHONY: sabnzbd_extra_install
 sabnzbd_extra_install:
-	install -m 755 -d $(STAGING_DIR)/var
+	install -m 755 -d $(STAGING_DIR)/var/scripts
+	install -m 755 src/SabToSyno.py $(STAGING_DIR)/var/scripts/SabToSyno.py
 	install -m 600 src/config.ini $(STAGING_DIR)/var/config.ini

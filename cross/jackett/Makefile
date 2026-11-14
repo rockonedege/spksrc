@@ -1,23 +1,33 @@
 PKG_NAME = Jackett
-PKG_VERS = 0.14.485
+PKG_VERS = 0.24.726
 PKG_EXT = tar.gz
-PKG_DIST_NAME = $(PKG_NAME).Binaries.Mono.$(PKG_EXT)
-PKG_DIST_FILE = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
+PKG_DIST_NAME = $(PKG_NAME).Binaries.Linux$(PKG_DIST_ARCH).$(PKG_EXT)
 PKG_DIST_SITE = https://github.com/Jackett/Jackett/releases/download/v$(PKG_VERS)
-PKG_DIR = jackett
+PKG_DIST_FILE = $(PKG_NAME)-$(PKG_VERS).Binaries.Linux$(PKG_DIST_ARCH).$(PKG_EXT)
+PKG_DIR = Jackett
 
 DEPENDS =
 
 HOMEPAGE = https://github.com/Jackett/Jackett
 COMMENT  = Jackett works as a proxy server: it translates queries from apps into tracker-site-specific http queries, parses the html response, then sends results back to the requesting software. Jackett is a single repository of maintained indexer scraping & translation logic - removing the burden from other apps.
-LICENSE  = GNU GPL v2
+LICENSE  = GPLv2
 
-CONFIGURE_TARGET = nop
-COMPILE_TARGET = nop
-INSTALL_TARGET = myInstall
+INSTALL_TARGET = jackett_install
 
-include ../../mk/spksrc.cross-cc.mk
+# use digests with multiple files
+PKG_DIST_ARCH_LIST = AMDx64 ARM32 ARM64
 
-myInstall:
-	mkdir -p $(STAGING_INSTALL_PREFIX)/share/$(PKG_DIR)
-	tar -cf - -C $(WORK_DIR)/$(PKG_NAME) . | tar -xf - -C $(STAGING_INSTALL_PREFIX)/share/$(PKG_DIR)
+include ../../mk/spksrc.common.mk
+PKG_DIST_ARCH = AMDx64
+ifeq ($(findstring $(ARCH),$(ARMv7_ARCHS)),$(ARCH))
+PKG_DIST_ARCH = ARM32
+else ifeq ($(findstring $(ARCH),$(ARMv8_ARCHS)),$(ARCH))
+PKG_DIST_ARCH = ARM64
+endif
+
+include ../../mk/spksrc.cross-install.mk
+
+.PHONY: jackett_install
+jackett_install:
+	mkdir -p $(STAGING_INSTALL_PREFIX)/share
+	tar -cf - -C $(WORK_DIR)/$(PKG_DIR) . | tar -xf - -C $(STAGING_INSTALL_PREFIX)/share

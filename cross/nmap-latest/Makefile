@@ -1,0 +1,38 @@
+PKG_NAME = nmap
+PKG_VERS = 7.992
+PKG_EXT = tar.bz2
+PKG_DIST_NAME = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
+PKG_DIST_SITE = https://nmap.org/dist
+PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
+
+DEPENDS = cross/libpcap cross/openssl3
+
+# libdnet finds no routing interface without linux/netlink.h, which does not compile
+# against the 2.6.32 headers. Below this floor cross/nmap falls through to nmap-7.98.
+MIN_KERNEL_VERSION = 3.2
+
+HOMEPAGE = https://nmap.org/
+COMMENT  = Nmap ("Network Mapper") is a free and open source utility for network discovery and security auditing.
+LICENSE  = https://svn.nmap.org/nmap/COPYING
+
+GNU_CONFIGURE = 1
+CONFIGURE_ARGS  = --without-zenmap
+CONFIGURE_ARGS += --without-ndiff
+CONFIGURE_ARGS += --with-liblua=included
+CONFIGURE_ARGS += --with-libpcre=included
+# openssl prefix from the single source of truth (cross-env.mk scan): the shared
+# meta staging if present, else the local staging (cross/openssl3).
+CONFIGURE_ARGS += --with-openssl=$(OPENSSL_STAGING_INSTALL_PREFIX)
+
+include ../../mk/spksrc.common.mk
+
+ADDITIONAL_CPPFLAGS = -O3
+# glibc hides the inttypes.h PRI* and stdint.h limit macros from C++ behind these
+# until 2.18, and nmap uses them:
+#   MACLookup.cc:163:30: error: expected ')' before 'PRIX64'
+ifeq ($(call version_lt,$(TC_GLIBC),2.18),1)
+ADDITIONAL_CPPFLAGS += -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS
+ADDITIONAL_CPPFLAGS += -D__STDC_CONSTANT_MACROS
+endif
+
+include ../../mk/spksrc.cross-cc.mk

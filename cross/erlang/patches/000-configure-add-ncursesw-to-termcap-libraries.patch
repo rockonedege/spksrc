@@ -1,0 +1,5 @@
+--- erts/configure.orig
++++ erts/configure
+@@ -16149 +16149 @@
+-    termcap_libs="tinfo ncurses curses termcap termlib"
++    termcap_libs="tinfo ncursesw ncurses curses termcap termlib"

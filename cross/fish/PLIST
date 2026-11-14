@@ -1,0 +1,9 @@
+bin:bin/fish
+bin:bin/fish_indent
+bin:bin/fish_key_reader
+rsc:doc_src/license.rst
+rsc:etc/fish/
+rsc:share/doc/fish/
+rsc:share/fish/vendor_completions.d/
+rsc:share/fish/vendor_conf.d/
+rsc:share/fish/vendor_functions.d/

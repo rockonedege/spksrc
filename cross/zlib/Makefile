@@ -1,16 +1,23 @@
 PKG_NAME = zlib
-PKG_VERS = 1.2.11
+PKG_VERS = 1.3.2
 PKG_EXT = tar.gz
 PKG_DIST_NAME = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
-PKG_DIST_SITE = http://zlib.net
+# Primary: GitHub release CDN (most reliable, byte-identical to upstream).
+# Fallback: canonical fossils archive (permanent for pinned versions).
+PKG_DIST_SITE = https://github.com/madler/zlib/releases/download/v$(PKG_VERS)
+PKG_DIST_MIRRORS = https://zlib.net/fossils
 PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
 
 DEPENDS =
 
-HOMEPAGE = http://zlib.net/
-COMMENT  = Compression Library
+HOMEPAGE = https://zlib.net/
+COMMENT  = A Massively Spiffy Yet Delicately Unobtrusive Compression Library.
 LICENSE  = zlib-license
 
-CONFIGURE_ARGS = --shared --prefix=$(INSTALL_PREFIX)
+ADDITIONAL_CFLAGS = -Os -fPIC
 
-include ../../mk/spksrc.cross-cc.mk
+# create pkgconfig file in lib/pkgconfig (instead of share/pkgconfig)
+CONFIGURE_ARGS += -DINSTALL_PKGCONFIG_DIR=$(INSTALL_PREFIX)/lib/pkgconfig
+CONFIGURE_ARGS += -DZLIB_BUILD_EXAMPLES=OFF
+
+include ../../mk/spksrc.cross-cmake.mk

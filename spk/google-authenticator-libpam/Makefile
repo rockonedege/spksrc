@@ -1,0 +1,32 @@
+SPK_NAME = google-authenticator-libpam
+SPK_VERS = 1.11
+SPK_REV = 2
+SPK_ICON = src/google-authenticator.png
+
+DEPENDS = cross/google-authenticator-libpam
+
+MAINTAINER = Soraxas
+DESCRIPTION = google-authenticator PAM module for two-factor authentication for logging into servers via SSH, etc. To activate this module you have to manually configure the pam module and related configurations. Please follow the instructions on the SynoCommunity documentation page.
+DISPLAY_NAME = Google Authenticator for libpam
+STARTABLE = no
+CHANGELOG = "Update to v1.11."
+
+HOMEPAGE = https://github.com/google/google-authenticator-libpam
+SUPPORTURL = https://docs.synocommunity.com/packages/google-authenticator/
+LICENSE = Apache-2.0
+LICENSE_FILE = $(WORK_DIR)/$(SPK_NAME)-$(SPK_VERS)/LICENSE
+
+WIZARDS_DIR = src/wizard/
+
+# As DSM has google-authenticator installed, create a SynoCommunity specific link
+CUSTOM_AUTHENTICATOR_NAME = sc-google-authenticator
+POST_STRIP_TARGET = google-authenticator-libpam_extra_install
+SPK_COMMANDS = bin/$(CUSTOM_AUTHENTICATOR_NAME) bin/sc-google-authenticator-setup
+
+include ../../mk/spksrc.spk.mk
+
+.PHONY: google-authenticator-libpam_extra_install
+google-authenticator-libpam_extra_install:
+	rm -f $(STAGING_DIR)/bin/$(CUSTOM_AUTHENTICATOR_NAME)
+	install -m 755 $(CURDIR)/src/bin/$(CUSTOM_AUTHENTICATOR_NAME) $(STAGING_DIR)/bin/$(CUSTOM_AUTHENTICATOR_NAME)
+	install -m 755 $(CURDIR)/src/bin/sc-google-authenticator-setup $(STAGING_DIR)/bin/sc-google-authenticator-setup

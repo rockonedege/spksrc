@@ -1,18 +1,7 @@
-PKG_NAME = cairo
-PKG_VERS = 1.16.0
-PKG_EXT = tar.xz
-PKG_DIST_NAME = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
-PKG_DIST_SITE = https://www.cairographics.org/releases/
-PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
+PKG_NAME = cairo-virtual
 
-DEPENDS = cross/libpng cross/freetype cross/pixman
+include ../../mk/spksrc.common.mk
 
-HOMEPAGE = https://www.cairographics.org
-COMMENT  = Cairo is a 2D graphics library with support for multiple output devices.
-LICENSE  = GPLv2
+$(call depend,cross/cairo-latest|cross/cairo-1.16)
 
-GNU_CONFIGURE = 1
-ADDITIONAL_CPPFLAGS = -O
-
-
-include ../../mk/spksrc.cross-cc.mk
+include ../../mk/spksrc.cross-virtual.mk

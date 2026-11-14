@@ -1,6 +1,6 @@
 SPK_NAME = mutt
-SPK_VERS = 1.13.4
-SPK_REV = 4
+SPK_VERS = 2.4.3
+SPK_REV = 10
 SPK_ICON = src/mutt.png
 
 DEPENDS = cross/mutt
@@ -10,23 +10,21 @@ DESCRIPTION = Mutt is a small but very powerful text-based mail client for Unix 
 DISPLAY_NAME = Mutt
 STARTABLE = no
 
-CHANGELOG = "1. Update to 1.13.4<br/>2. Add SASL support"
+CHANGELOG = "1. Update mutt to v2.4.3. <br/>2. Update openssl to v3.5.9."
 
 HOMEPAGE   = http://www.mutt.org
 LICENSE    = GPLv2
 
 SERVICE_SETUP = src/service-setup.sh
 
-SPK_LINKS = /usr/local/bin/mutt:bin/mutt-utf8
+SPK_COMMANDS = bin/mutt
 
 POST_STRIP_TARGET = mutt_extra_install
-
 
 include ../../mk/spksrc.spk.mk
 
 .PHONY: mutt_extra_install
 mutt_extra_install:
-	install -m 755 src/mutt-utf8 $(STAGING_DIR)/bin/mutt-utf8
 	install -d -m 755 $(STAGING_DIR)/var
 	install -m 644 src/Muttrc.local $(STAGING_DIR)/var/Muttrc.local
-	echo "source $(INSTALL_PREFIX)/var/Muttrc.local" >> $(STAGING_DIR)/etc/Muttrc
+	echo "source $(INSTALL_PREFIX)/var/Muttrc.local" >> $(STAGING_DIR)/var/Muttrc

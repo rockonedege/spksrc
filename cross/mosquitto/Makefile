@@ -1,16 +1,28 @@
 PKG_NAME = mosquitto
-PKG_VERS = 1.4.14
+PKG_VERS = 2.1.2
 PKG_EXT = tar.gz
 PKG_DIST_NAME = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
-PKG_DIST_SITE = http://mosquitto.org/files/source
+PKG_DIST_SITE = https://mosquitto.org/files/source
 PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
 
-DEPENDS = cross/c-ares cross/openssl cross/util-linux cross/libwebsockets
+DEPENDS  = cross/c-ares
+DEPENDS += cross/openssl3
+DEPENDS += cross/cjson
+DEPENDS += cross/sqlite
 
-HOMEPAGE = http://www.mosquitto.org/
-COMMENT  = Mosquitto is an open source message broker that implements the MQ Telemetry Transport protocol version 3.1.1.
-LICENSE  = BSD licensed
+# C++17 required by mosquittopp:
+#   CMake Error in lib/cpp/CMakeLists.txt: Target "mosquittopp" requires the
+#   language dialect "CXX17"
+MIN_GCC_VERSION = 7
 
-CONFIGURE_TARGET = nop
+HOMEPAGE = https://www.mosquitto.org/
+COMMENT  = Eclipse Mosquitto is an open source (EPL/EDL licensed) message broker that implements the MQTT protocol versions 5.0, 3.1.1 and 3.1.
+LICENSE  = EPL 1.0 and EDL 1.0
 
-include ../../mk/spksrc.cross-cc.mk
+CONFIGURE_ARGS += -DWITH_SRV=ON
+CONFIGURE_ARGS += -DWITH_DOCS=OFF
+CONFIGURE_ARGS += -DWITH_TESTS=OFF
+CONFIGURE_ARGS += -DWITH_PLUGIN_EXAMPLES=OFF
+CONFIGURE_ARGS += -DWITH_HTTP_API=OFF
+
+include ../../mk/spksrc.cross-cmake.mk

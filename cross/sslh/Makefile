@@ -1,23 +1,41 @@
 PKG_NAME = sslh
-PKG_VERS = 1.19c
+PKG_VERS = 2.3.1
 PKG_EXT = tar.gz
-PKG_DIST_NAME = $(PKG_NAME)-v$(PKG_VERS).$(PKG_EXT)
-PKG_DIST_SITE = http://www.rutschle.net/tech/sslh
-PKG_DIR = $(PKG_NAME)-v$(PKG_VERS)
+PKG_DIST_NAME = v$(PKG_VERS).$(PKG_EXT)
+PKG_DIST_SITE = https://github.com/yrutschle/sslh/archive
+PKG_DIST_FILE = $(PKG_NAME)-$(PKG_DIST_NAME)
+PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
 
-DEPENDS = cross/libconfig cross/pcre
+DEPENDS = cross/libconfig
+DEPENDS += cross/pcre2
+DEPENDS += cross/tcp_wrappers
+DEPENDS += cross/libcap
+DEPENDS += cross/libev
 
-HOMEPAGE = http://www.rutschle.net/tech/sslh.shtml
-COMMENT  = sslh accepts HTTPS, SSH and OpenVPN connections on the same port
+# -D_DEFAULT_SOURCE below is what makes netdb.h expose NI_MAXHOST; glibc only honours
+# that macro from 2.19, and below it the build stops on
+#   common.h:144: error: 'NI_MAXHOST' undeclared here (not in a function)
+MIN_GLIBC_VERSION = 2.19
+
+HOMEPAGE = https://www.rutschle.net/tech/sslh/README.html
+COMMENT  = Applicative Protocol Multiplexer (e.g. share SSH and HTTPS on the same port).
 LICENSE  = GPLv2
 
-CONFIGURE_TARGET = nop
-INSTALL_TARGET = myInstall
+GNU_CONFIGURE = 1
+
+INSTALL_TARGET = sslh_install
+COMPILE_ARGS = USELIBWRAP=1 USELIBCAP=1
+
+ADDITIONAL_CFLAGS = -std=c11
+# force definition of __USE_MISC to define NI_MAXHOST, NI_MAXSERV, ... in netdb.h of toolchain
+# __USE_MISC is defined in features.h when _DEFAULT_SOURCE is defined (otherwise __USE_MISC is undefined)
+ADDITIONAL_CFLAGS += -D_DEFAULT_SOURCE
 
 include ../../mk/spksrc.cross-cc.mk
 
-.PHONY: myInstall
-myInstall:
-	@$(RUN) mkdir -p $(STAGING_INSTALL_PREFIX)/bin
-	@$(RUN) cp $(WORK_DIR)/$(PKG_DIR)/sslh-fork $(STAGING_INSTALL_PREFIX)/bin/sslh
-
+.PHONY: sslh_install
+sslh_install:
+	@install -d -m 755 $(STAGING_INSTALL_PREFIX)/bin
+	@install -m 755 $(WORK_DIR)/$(PKG_DIR)/sslh-fork $(STAGING_INSTALL_PREFIX)/bin/
+	@install -m 755 $(WORK_DIR)/$(PKG_DIR)/sslh-select $(STAGING_INSTALL_PREFIX)/bin/
+	@install -m 755 $(WORK_DIR)/$(PKG_DIR)/sslh-ev $(STAGING_INSTALL_PREFIX)/bin/

@@ -1,23 +1,36 @@
 PKG_NAME = ser2net
-PKG_VERS = 4.1.6
+PKG_VERS = 4.6.7
 PKG_EXT = tar.gz
 PKG_DIST_NAME = v$(PKG_VERS).$(PKG_EXT)
-PKG_DIST_SITE = https://github.com/cminyard/$(PKG_NAME)/archive
+PKG_DIST_SITE = https://github.com/cminyard/ser2net/archive
 PKG_DIST_FILE = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
 PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
 
-DEPENDS = cross/gensio cross/libyaml
+DEPENDS = cross/libyaml
+
+OPTIONAL_DEPENDS = cross/gensio cross/gensio-2.6.8
+
+# gcc 4.3.7 has no C11 anonymous union members, which scalar_next_state uses:
+#   yamlconf.c:755: unknown field 'keyval_info' specified in initializer
+MIN_GCC_VERSION = 4.6
 
 HOMEPAGE = https://sourceforge.net/projects/ser2net/
-COMMENT  = Serial port to network proxy.
+COMMENT  = Serial to network interface, allows TCP/UDP to serial port connections.
 LICENSE  = GPLv2
 
 GNU_CONFIGURE = 1
 PRE_CONFIGURE_TARGET = ser2net_pre_configure
 POST_INSTALL_TARGET = ser2net_post_install
 
-
 include ../../mk/spksrc.cross-cc.mk
+
+ifeq ($(findstring $(ARCH),$(ARMv5_ARCHS) $(ARMv7L_ARCHS)),$(ARCH))
+DEPENDS += cross/gensio-2.6.8
+else ifeq ($(call version_lt, ${TCVERSION}, 6.0)$(call version_ge, ${TCVERSION}, 3.0),11)
+DEPENDS += cross/gensio-2.6.8
+else
+DEPENDS += cross/gensio
+endif
 
 .PHONY: ser2net_pre_configure
 ser2net_pre_configure:

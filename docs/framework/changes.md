@@ -1,0 +1,1943 @@
+# Framework Changes
+
+A curated log of notable changes to the spksrc **build framework** — the `mk/`
+tree and the conventions every package Makefile relies on — newest first.
+
+This is **not** an exhaustive changelog (for that, see `git log -- mk/`). Each
+entry is collapsed to its date and title; expand it (▸) for what changed, why,
+and a link to the pull request. Efforts that span several pull requests are a
+single entry with the individual PRs nested inside.
+
+## Highlights — the short version
+
+If you only read one thing, read this. The details are in the dated log below.
+
+- **`make help` knows your package.** Run it inside any package directory for a
+  context-aware list of the targets and variables that actually apply there:
+
+    ```bash
+    cd cross/curl && make help
+    ```
+
+- **Ask an architecture what stands in the way.** `make check-x86-5.2` (or
+  `make ARCH=x86 TCVERSION=5.2 check`) walks the whole dependency tree and lists every
+  capability gate that architecture fails, or says every gate is met:
+
+    ```
+    ===>  tvheadend: x86-5.2 check: 17 failed, 14 more behind an optional dependency
+           required
+             cross/ffmpeg8              gcc 4.7.3 < 4.9
+             cross/python314            gcc 4.7.3 < 4.8
+             ...
+           optional
+             cross/frei0r               gcc 4.7.3 < 7.5
+             ...
+    ```
+
+    **required** is what the build needs; **optional** is what an `OPTIONAL_DEPENDS`
+    branch would demand if turned on, and never a reason to refuse. A clear architecture
+    answers `x86-5.2 check: OK`.
+
+    The pre-check uses the same walk, so a refused build names every blocker at once
+    instead of stopping at the first. See
+    [Architecture Support](../developer-guide/packaging/makefile-variables.md#architecture-support).
+
+- **Take a dependency where it can be built, without copying its conditions.**
+  `$(call depend,cross/vvenc,--enable-libvvenc)` adds vvenc and its switch wherever vvenc's
+  own floors are met, and leaves both out elsewhere; `$(call depend,cross/x)` is a plain
+  `DEPENDS`. A package like ffmpeg no longer repeats, in an `ifeq` per library, the floors
+  each library already declares. See [Macros](../reference/macros.md#dependencies).
+
+- **Ask the toolchain for a tool.** `$(call tc,gcc)`, `$(call tc,ar)` — the absolute
+  path of a cross tool, following whichever overlay provides it. Never write
+  `$(TC_PATH)$(TC_PREFIX)gcc`: it silently resolves to the vendor compiler as soon as an
+  overlay is active. `$(call native,gcc)` is the same for the build host. See
+  [Macros](../reference/macros.md#toolchain-tools).
+
+- **Declare what a package needs, not where it fails.** Instead of
+  hand-maintaining an `UNSUPPORTED_ARCHS` list, state the capability floor:
+  **`MIN_GCC_VERSION`**, **`MIN_GLIBC_VERSION`**, **`MIN_RUSTC_VERSION`**,
+  **`REQUIRE_64BIT`**. The framework refuses exactly the architectures whose
+  toolchain cannot meet it, with a human-readable reason, and the gate stays
+  correct on its own as toolchains move. See
+  [Architecture Support](../developer-guide/packaging/makefile-variables.md#architecture-support).
+
+- **Every build system uses the same variable names now.** CMake no longer has
+  its own `CMAKE_ARGS`: pass configure options through **`CONFIGURE_ARGS`** for
+  autotools, CMake *and* Meson alike. Compile and install options are likewise
+  unified on **`COMPILE_ARGS`** and **`INSTALL_ARGS`** (the old
+  `COMPILE_MAKE_OPTIONS` / `INSTALL_MAKE_OPTIONS` are gone). See
+  [Build System Selection](../developer-guide/packaging/makefile-variables.md#build-system-selection)
+  and
+  [Compile and Install Arguments](../developer-guide/packaging/makefile-variables.md#compile-and-install-arguments).
+
+- **A build directory is one variable.** `CMAKE_BUILD_DIR` / `MESON_BUILD_DIR` /
+  `NINJA_BUILD_DIR` are unified on **`BUILD_DIR`**, which also opts an autotools
+  package into an out-of-tree build.
+
+- **Flaky download host? Add a mirror.** Set **`PKG_DIST_MIRRORS`** to one or
+  more fallback base URLs; each is tried in turn and still checked against
+  `digests`. See
+  [Source downloads and mirrors](../developer-guide/packaging/makefile-variables.md#source-downloads-and-mirrors).
+
+- **`include ../../mk/spksrc.common.mk` before any macro call.** The
+  `version_*` macros (and friends) are only defined once `spksrc.common.mk` is
+  included, so a Makefile must include it **before** the first `version_ge`,
+  `version_lt`, … it uses.
+
+- **Turning a package off? Prefer `DISABLED` over `BROKEN`.** A `DISABLED` file
+  in a package folder skips it exactly like `BROKEN`, but reads as an
+  intentional choice rather than a failure. Put the reason in the file. See the
+  [package lifecycle](../contributing/package-lifecycle.md) guide.
+
+- **The target ABI reaches every language now.** A toolchain declares its ABI
+  once in **`TC_EXTRA_BUILD_FLAGS`**; the framework folds it into every
+  `TC_EXTRA_<LANG>FLAGS` and the link, so C, C++, Fortran and the linker all
+  agree on the ABI. Link-time libraries (`-lrt`, `-latomic`) live in
+  **`TC_EXTRA_LDFLAGS`** and are passed plainly, with `-latomic` auto-dropped
+  where the gcc lacks it. They are *not* wrapped in `--as-needed`: `LDFLAGS`
+  precedes the objects, so a front-placed library there resolves nothing yet and
+  the wrap discarded it outright. The `TC_EXTRA_*FLAGS` are written to
+  `tc_vars.flags.mk`, beside the flags they are folded into; `tc_vars.mk` holds the
+  toolchain's identity and paths (#7738).
+  See [Extra flags a toolchain can declare](../framework/toolchain.md#extra-flags-a-toolchain-can-declare).
+
+- **Build a host tool once, host it, reuse it.** A native package hosts its build
+  output as a release archive with a single line — **`ARCHIVE_NAME`** — so an
+  expensive tool (llvm, the gcc-8.5 overlays) is built once and pulled in via
+  `DEPENDS` instead of rebuilt from source. **`make nativeclean`** drops a native
+  package's build cookies to re-run it from scratch, the native counterpart of
+  `spkclean`.
+
+- **One build tree, one set of `tc_vars`.** The toolchain directory no longer holds
+  generated variables at all; each build writes its own under its work directory, and
+  a dependency reads the tree that pulled it in. Two builds can run side by side
+  against the same toolchain. See
+  [tc_vars Files](../framework/toolchain.md#tc_vars-files).
+
+- **Rust builds on the legacy archs, and overlays are a first-class notion.** The archs
+  `rustup` has no usable `rust-std` for — PowerPC e500 (`qoriq`, `ppc853x`), ARMv5
+  `88f6281`, `x86-5.2` — now get a Rust toolchain built from source, published as an
+  archive and pulled in like any other dependency. That fixes long-standing failures on
+  those archs (SPE float, the ppc853x TLS relocations, `AtomicU64`). It also
+  generalises: a component shipped **beside** a base toolchain is an *overlay*, switched
+  with **`OVERLAY_RUSTC`** / **`OVERLAY_BINUTILS`** from `local.mk`, and `make help`
+  shows which are active for your arch.
+
+---
+
+??? note "November 11th 2026 — The overlay producers: gcc 8.5, binutils 2.30 and rust, profile-guided (#7707)"
+
+    - **What:** the producers of the overlay archives that master downloads since
+      #7701. `native/gcc-8.5` (with `gmp`, `mpfr`, `mpc` and `isl`) joins
+      `native/binutils-2.30` and `native/rustc-1.82`, which now produce the archives
+      the `overlay/` directories name, a generic arch's archive under the real arch it
+      shares a toolchain with, in the `toolchains/dsm<dsm>` and `rust/qoriq` releases.
+    - **A producer is a version and a component name.** The producers include
+      `mk/spksrc.native-toolchain.mk`, which carries `arch-<arch>-<dsm>`, `all-<dsm>`,
+      the host optimisation flags and the two profile-guided passes
+      (**`TOOLCHAIN_PGO`**, on for gcc and binutils): cc1 8.5% faster at `-O2` and
+      12.5% at `-O3`, `as` 10%. A generic arch is built as the real arch whose archive
+      it fetches (`arch-x64-7.1` builds `apollolake-7.1`), and an archive that exists
+      is not rebuilt, so `all-<dsm>` builds each one once, **`TOOLCHAIN_JOBS`** at a
+      time, and resumes where it stopped. An archive is written under a temporary
+      name, then renamed.
+    - **Switches are booleans.** `is_true`, `is_false`, `bool` and `assert_bool` join
+      the macros. See [Boolean values](../reference/macros.md#boolean-values).
+    - **Rust 1.98, built with gcc 8.5**: `native/rustc-1.98`, with the gcc decision of
+      `overlay.mk` (`OVERLAY_GCC`, `OVERLAY_GCC_VERSION`, `_OVERLAY_GCC_ON`), off for the
+      tree: the producer turns it on for itself.
+      Packages keep the vendor gcc, and the same rust.
+    - **What `tc_vars.overlay.mk` says about the overlays**, a file of their own beside
+      `tc_vars.mk`, which keeps the toolchain alone: one block per overlay the arch ships,
+      binutils, gcc and rust -- `TC_OVERLAY_<c>_ON` (`TRUE`/`FALSE`, whether the build uses
+      it), then `TC_OVERLAY_<c>` (its version), `_DIR` and `_PATH`, filled used or not -- and
+      `TC_RUST_LINK_VIA_BINUTILS` / `TC_OVERLAY_RUSTC_LINKER` for the Rust link through the
+      binutils shim; `$(call tc,…)` takes a `_PATH` only when ON. The tree's own names move to
+      `_OVERLAY_<c>_DIR` and `_OVERLAY_<c>_ON`, so the file no longer shadows them at parse --
+      a work dir generated with an overlay off used to keep it off whatever the switch -- and
+      a run whose switches resolve otherwise than the file records stops, asking for `make
+      clean`. `make overlay-<arch>-<tcvers>` shows what each overlay resolves to and whether
+      the work dir agrees; `make help-<arch>-<tcvers>` (= `make help ARCH=… TCVERSION=…`) adds
+      it and `check` to the package help, and every arch build prints both after its
+      `[BEGIN]`. `TC_KERNEL` sits with the versions.
+    - **The C locale for the producers** (`export LC_ALL := C`,
+      `spksrc.native-toolchain.mk`): the vendor gcc of DSM 5.2 aborts under any other
+      locale. Packages keep the caller's locale; the gcc overlay takes the vendor gcc out
+      of their builds.
+    - `PKG_NAME` picks a producer's component in `mk/spksrc.native-toolchain/`
+      (`gcc.mk`, `binutils.mk`, `rustc.mk`).
+    - **A producer's revision follows its consumer:** one past the overlay's `PKG_REV`
+      (`toolchain_published_rev`), `v1` for a new toolchain; `PKG_REV=vN` sets another. The
+      binutils gcc and rust build against stays at the published one.
+    - **gcc and binutils build with a build triple of their own**
+      (`TOOLCHAIN_BUILD_TRIPLE`, `--build=--host=<machine>-build_pc-linux-gnu`, as
+      crosstool-NG does). An x86_64 target shares the build host's triple, so both
+      configured as native tools: gcc linked its target libraries with the host's binutils
+      -- libgfortran got a `RUNPATH` that kept a package's libquadmath out of the loader's
+      reach on DSM, libstdc++ and libgcc_s a `-z separate-code` layout, the tools were
+      installed twice under a doubled prefix -- and binutils' `ld` honoured the host's
+      `LD_LIBRARY_PATH` and `LD_RUN_PATH`.
+    - **The archives they made** (#7749, #7750): binutils v5 and gcc v6 for the 30 x86_64
+      targets; the same for DSM 7.1, with `armv7-7.1` (built as `armada38x-7.1`),
+      `aarch64-7.1` (as `rtd1296-7.1`) and `evansport-7.1` given the overlays and
+      `comcerto2k-7.1` rebuilt, aligned on `x64-7.1`; rust 1.98 v2. On `x64-7.1`, whose
+      vendor gcc is 8.5 as well, gcc v6 and binutils v5 use about 12% less CPU time than
+      the vendor toolchain; training gcc on real code as well gained nothing. The archives
+      they replace leave the releases once this is merged.
+    - **One file per theme.** `macros.mk` includes `mk/spksrc.common/macros/`
+      (`string`, `version`, `bool`, `list`, `depend`, `tools`, `archs`, `runlog`), each
+      macro documented the same way; `upper` and `lower` change case without a fork,
+      for the switches, the Rust triple suffixes, the arch-group patch directories and
+      the translated descriptions of INFO; `TRUE` and `FALSE` hold every spelling of a
+      switch; `read_makefile_var` reads one variable a Makefile
+      declares, and `dedup-files` is now `dedup_files`. The overlay decisions are split
+      the same way, `overlay.mk` reading `mk/spksrc.common/overlay/` (`binutils`,
+      `gcc`, `rustc`, `warnings`) in that order, and the toolchain side moves to
+      `mk/spksrc.toolchain/overlay/`. `overlay_dist_arch` joins the macros, replacing
+      `dist-arch.mk`.
+    - **What the overlay components share is written once:** `OVERLAY_COMPONENT_TEMPLATE`
+      creates the names every component has, `spksrc.overlay.mk` the archive and install
+      defaults, and `overlay_warn` picks a component's banner from its states.
+      `OVERLAY_BINUTILS_UNMATCHED` names the binutils overlay active beside the vendor
+      gcc, which no longer warns when the gcc overlay is active too.
+    - **`OVERLAY_<C>_VERSION`**, formerly `OVERLAY_<C>_VERS`: binutils and gcc default to
+      the newest the arch ships, like rust, rather than a pinned 2.30 and 8.5 -- the same
+      versions on every arch shipping them today, and empty where an arch ships none.
+      `OVERLAY_BINUTILS_ASKED` loses its leading `_`: it is carried to every sub-make.
+    - **`TC_BINUTILS` follows the gcc overlay:** with `OVERLAY_GCC=1`, whose binutils overlay
+      drives every compile, a `MIN_BINUTILS_VERSION` floor measures that `ld` rather than
+      the vendor one. Picking the default rust version no longer forks a shell on every
+      parse, only where the arch ships two versions.
+    - The producers share `TOOLCHAIN_BINUTILS_*`, the binutils gcc and rust are built
+      against, made by binutils' own `arch-<arch>-<dsm>`: profile-guided, and archived
+      under the revision its consumer publishes.
+    - **Rust is built as the official dist is**, no longer with x.py's `compiler` profile,
+      whose debug assertions made every rust package build slower and shipped a std with
+      its debug checks on: the `dist` profile, jemalloc, ThinLTO, one codegen unit, then
+      profile-guided -- rustc by x.py, LLVM, as a shared library, by gcc with
+      `HOST_OPTFLAGS` -- trained on the rustc-perf crates of the official dist. Release
+      builds of fd and bat for qoriq: 27% and 38% faster with rust 1.98, fd 23% with 1.82.
+    - The custom target takes `-Zunstable-options`, which rust 1.97+ requires for a JSON
+      target-spec.
+    - Nothing a package builds changes otherwise: builds keep using the archives as
+      published.
+    - See [Building and publishing an
+      overlay](toolchain.md#building-and-publishing-an-overlay).
+    - Pull request: [#7707](https://github.com/SynoCommunity/spksrc/pull/7707)
+
+??? note "November 8th 2026 — The toolchain's extra flags in tc_vars.flags.mk (#7738)"
+
+    - **What:** `TC_EXTRA_BUILD_FLAGS` and the `TC_EXTRA_<LANG>FLAGS` / `TC_EXTRA_LDFLAGS` /
+      `TC_EXTRA_RUSTFLAGS` move from `tc_vars.mk` to `tc_vars.flags.mk`, with the flags they
+      are already folded into: `tc_vars.mk` holds the toolchain's identity and paths. Their
+      readers, the CMake toolchain file and the Meson cross file, are generated with
+      `TC_VARS_ENV="flags rust"` and load that file; autotools builds load it anyway.
+    - **For a package:** a `TC_EXTRA_*` read in its own Makefile is defined only where the
+      flags are loaded -- not in a CMake or Meson build's own environment. None does in the
+      tree.
+
+??? note "November 6th 2026 — CMake finds what the toolchain's sysroot provides (#7729)"
+
+    - **What:** the generated CMake toolchain file appends the toolchain's sysroot to
+      `CMAKE_FIND_ROOT_PATH`, after the staging and the meta roots. With
+      `CMAKE_FIND_ROOT_PATH_MODE_LIBRARY/INCLUDE = ONLY` and the staging as the only root,
+      a `find_library`/`find_path` aimed at glibc itself -- `m`, `c`, `sys/epoll.h` --
+      returned `NOTFOUND` while the build went on: jasper linked `pow`/`sqrt` without
+      `libm` in `DT_NEEDED`, mosquitto fell back from epoll to a busy-looping poll, LLVM
+      dropped libxml2. Found by mreid-tt's audit of the CMake packages. What is built in
+      the staging still wins. Some sysroots carry more than glibc -- `libbfd` on most,
+      bz2, expat and uuid on ppc853x-5.2 -- now found where a package probes them
+      undeclared: declare what a package uses.
+    - **TC_SYSROOT:** still declared in the toolchain Makefile -- stage0 writes `tc_vars.mk`
+      before the toolchain is extracted -- and now checked against what its gcc reports
+      (`-print-sysroot`) when a package's `tcvars` runs: a toolchain whose declaration
+      differs stops there. ppc853x-5.2 declared `$(TC_TARGET)`, the tooldir above its
+      sysroot, so its `SYSROOT`, crossenv's `--sysroot` and binutils' `--with-sysroot`
+      pointed there; it now declares `$(TC_TARGET)/libc`, and names its
+      `TC_INCLUDE`/`TC_LIBRARY` tooldir directly, so its `-I`/`-L` are unchanged.
+
+??? note "November 1st 2026 — Toolchain overlays in overlay/, installed with their toolchain (#7701)"
+
+    - **What:** overlay consumers move from `toolchain/syno-<arch>-<dsm>_<component>-…` to
+      `overlay/`, four lines each (`PKG_VERS`, `PKG_REV`, `include
+      ../../mk/spksrc.overlay.mk`), the directory name giving arch, DSM and component. A
+      generic arch downloads the archive of the real arch whose toolchain it shares. The
+      archives are kept in `distrib/overlay/<dsm>/`, as the toolchains in
+      `distrib/toolchain/<dsm>/`.
+    - **145 consumers:** gcc 8.5 and binutils 2.30 for 65 toolchains of DSM 5.2 to 7.1, the
+      rust of the five legacy archs, and the rust built with gcc 8.5.
+    - **Installed and cleaned with the toolchain, used or not.** A base toolchain installs
+      every overlay its arch ships, and `make clean` on it cleans them. Builds are
+      unchanged: C keeps the vendor gcc and `as`/`ld`, rust the build made with the vendor
+      gcc, its link through the binutils overlay. `make dist-clean` gains `overlay-clean`.
+    - See [Toolchain Overlays](toolchain.md#toolchain-overlays).
+    - Pull request: [#7701](https://github.com/SynoCommunity/spksrc/pull/7701)
+
+??? note "October 29th 2026 — Kernel options for the modules, and their symbols across directories (#7678)"
+
+    - **`REQUIRE_KERNEL_OPTION`** sets `CONFIG_<option>=y|m|n` before the modules of
+      `REQUIRE_KERNEL_MODULE`: the menus they sit behind (DSM 7 kernels are built
+      without the wireless stack), or, `=n`, a built-in option the modules must not turn
+      on as it changes the structures of the running kernel. Such an option is left as
+      the kernel has it, and the build stops if `olddefconfig` turns it on all the same.
+      A `def_bool y` hiding it is dropped first: Synology's 3.10 BSP kernels force
+      `WIRELESS_EXT` with `WIRELESS`. The log lists the built-in options the modules
+      turned on and off.
+
+    - **The modules of a directory see the symbols of those built before it**:
+      `modules.symvers` gathers them, given to the next directories and to the
+      `driver/*` built against the kernel as `KBUILD_EXTRA_SYMBOLS`. `depends=` now
+      names modules of other directories (`mac80211` needs `cfg80211`), which
+      `synocli-kernelmodule` loads first.
+
+    - **A module whose directory the kernel lacks is skipped**, so a driver that moved
+      between kernels is listed once per directory; the fourth field of
+      `REQUIRE_KERNEL_MODULE` is read from the kernel's own config, and a module
+      without it is not enabled; `scripts/config` keeps the case of option names
+      (`MT76x0U`) where it can.
+
+    - **A generic build none of whose sub-archs the package supports stops**: a package
+      leaving out SRM (`UNSUPPORTED_ARCHS = $(SRM_ARCHS)`) is refused for `armv7-1.3`
+      instead of failing on an empty package.
+
+??? note "October 29th 2026 — Out-of-tree kernel drivers, built per kernel: driver/ (#7656)"
+
+    - **A kernel module spk carries the modules of every kernel of its arch**:
+      `kernel-depend` prepares `kernel/syno-<arch>-<version>` for each sub-arch, in the
+      `WORK_DIR` of the spk, and builds the in-tree modules of `REQUIRE_KERNEL_MODULE`
+      there. An out-of-tree driver had no place in that walk: as a regular dependency it
+      was built once, for the generic arch, with no kernel to build against.
+
+    - **`driver/<pkg>` is that place.** `kernel-depend` builds every `driver/*` of the
+      spk `DEPENDS` right after each kernel, with its `ARCH` and `TCVERSION`; the regular
+      walk leaves them out. `spksrc.driver.mk` is cross-cc with, per kernel, its own
+      cookies and extracted source (every kernel of the arch shares the `WORK_DIR`),
+      `KERNEL_ROOT` for the prepared kernel source, and `DRIVER_MODULE_DIR`, the
+      `lib/modules/<arch>/<kernel>` of the in-tree modules.
+
+    - **A driver states the kernel and gcc it needs** -- `DRIVER_KERNEL_MIN`,
+      `DRIVER_GCC_MIN` -- and is skipped below them. A driver without sources builds,
+      per kernel, the first of several versions that is not skipped: the counterpart of
+      `$(call depend,a|b|c)` for a choice that depends on each sub-arch rather than on the
+      generic arch. `driver/linuxtv` picks media_build frozen for kernels 4.4+, 3.10+
+      or 3.2+ this way, a 4.4 kernel on gcc 4.9 taking the 3.10 one.
+
+    - **A driver reads `KERNEL_PCI_SLOT`** of its kernel as `DRIVER_PCI_SLOT`, to build
+      PCI drivers only where a card can go.
+
+    - **A multi-kernel build drops each kernel's sources once its modules are installed**;
+      cookies stay, so a stopped run resumes.
+
+    - **A driver builds the `driver/*` of its own `DEPENDS` first**, for the same
+      kernel: `driver/linuxtv-*` take their media tree from `driver/linux-media-*`,
+      hosted in the `linuxtv/media_build` release and rebuilt by `native/linux-media-*`
+      with the archive step of `spksrc.build/archive.mk`.
+
+    - **Kernel modules and drivers build with the compiler of the Synology
+      toolchain**: `OVERLAY_GCC` and `OVERLAY_BINUTILS` are forced off there.
+
+??? note "October 28th 2026 — Kernel modules on every kernel that has sources, built once per directory (#7672)"
+
+    - **Kernel modules are stripped with `--strip-debug`** by `strip.mk`: the plain strip
+      left a `*.ko` without the symbol table the module loader links it with, so every
+      synokernel package replaced the target with its own `find`.
+
+    - **`REQUIRE_KERNEL_MODULE` builds each directory once**, and skips an option the
+      kernel does not offer, so one list spans kernels: `CONFIG_<option>=m` on the command
+      line rebuilt the whole directory for every module (usbserial on braswell-7.3: 16
+      minutes to 36 seconds). An optional fourth field names a feature the kernel must
+      have built in (`...:regmap-i2c:CONFIG_REGMAP`).
+
+    - **A generic build takes the sub-archs that have a kernel**, and leaves the others
+      out of the package arch list: `epyc7003` (a kernel for 7.4 only) no longer needs
+      excluding per package. `REMOVE_FROM_GENERIC_ARCHS` now applies (its generic-arch
+      test ran before `GENERIC_ARCHS` was set), and a sub-arch built directly without a
+      kernel stops in pre-check.
+
+    - **powerpc and SRM 1.2 kernels build modules**: `crtsavres.o`, which older
+      `modules_prepare` skip, and the `yylloc` of dtc on ipq806x-1.2.
+
+    - **`KERNEL_PCI_SLOT = 1`** marks, in `kernel/syno-<arch>-<version>`, the platforms of
+      which a model takes PCIe add-in cards.
+
+    - **`kernel-depend` only runs where `REQUIRE_KERNEL` listed kernels**: a cross
+      dependency of a kernel module spk inherited `REQUIRE_KERNEL_MODULE` and ran the walk
+      in its own directory.
+
+??? note "October 28th 2026 — A fresh tree no longer hangs on its first toolchain bootstrap (#7667)"
+
+    - **`make check` could wait forever on a new tree.** `depend.mk` resolves
+      `OPTIONAL_DEPENDS` in parallel, one `dependency-unsupported` sub-make each. With
+      the toolchain not yet extracted, each of them bootstrapped it (`stage0.mk`) at the
+      same time: the second found the toolchain patch applied, and `patch` asked whether
+      to reverse it, on the terminal `script` gives the build, where no one answers.
+
+    - **The bootstrap holds a lock per toolchain** (`flock $(TC_WORK_DIR).lock`): one
+      sub-make prepares it, the others wait and find its cookies.
+
+    - **`patch` asks no questions** (`--forward --batch`, `spksrc.build/patch.mk`): a
+      patch already applied, or a file it cannot find, fails the build instead of
+      waiting, and a patch is never applied reversed.
+
+??? note "October 26th 2026 — DSM 7.4 toolchains, toolkits and kernels (#7663)"
+
+    - **DSM 7.4 (build 90080) is a target.** `tc-versions.mk`, `tk-versions.mk` and
+      `kernel/versions.mk` map `7.4` to it, and `toolchain/`, `toolkit/` and `kernel/`
+      gain their `syno-<arch>-7.4`: 32 toolchains (with the generic `x64`, `aarch64` and
+      `armv7`), 29 toolkits and 28 kernels.
+
+    - **CI builds DSM 7.4** when a package asks for it: a `MIN_DSM_VERSION` of 7.4 adds
+      `x64-7.4`, `aarch64-7.4` and `armv7-7.4` (or `noarch-7.4`) to the matrix, as 7.2 and
+      7.3 do.
+
+    - **Every 7.4 arch has its kernel but `epyc7003ntb`**, whose sources Synology has
+      not published: kernel module packages can target DSM 7.4 on the others.
+
+??? note "October 13th 2026 — The Rust build environment is isolated, and DEFAULT_ENV splits in two (#7584)"
+
+    - **A bare `CFLAGS` is what cc-rs falls back to for both sides of a cross build.**
+      `tc_vars.flags.mk` only records make variables; `tc_autotools_vars` is what puts
+      `CFLAGS` into the *environment*, and from there the target sysroot and `-idirafter`
+      reached host build scripts -- the `psm` crate failing on old-gcc archs (#7573).
+
+    - **`tc_rust_vars` now names every variable cc-rs consults**: `CFLAGS_<triple>` and
+      `CXXFLAGS_<triple>` for the target, `HOST_CC`, `HOST_CXX`, `HOST_AR` and empty
+      `HOST_CFLAGS` / `HOST_CXXFLAGS` for the host, beside the `CC_/CXX_/AR_<triple>` it
+      already emitted. cc-rs prefers those over the bare value, so the autotools `CFLAGS`
+      is never consulted there -- with nothing kept out of the environment.
+      `ADDITIONAL_C*FLAGS` stay deferred, as in `tc_autotools_vars`, so a package's own
+      additions still reach cc-rs.
+
+    - **`DEFAULT_ENV` held two jobs**, and that is what made #7577 breakable: narrowing the
+      list to isolate the rust env also dropped a build-system marker, so librsvg lost its
+      ninja install and pngquant3 its flags (reverted in #7581). They are separate now --
+      `BUILD_SYSTEM` is `autotools`, `cargo`, `cmake`, `meson` or `none`, what `install.mk`
+      and `compile.mk` ask about; `TC_VARS_ENV` lists which `tc_vars.<word>.mk` to load.
+      A cargo build loads `rust` alone, reading the per-triple and `HOST_*` variables
+      rather than the bare `CC` and `CFLAGS`; `cross-rust.mk` declared no build system at
+      all before, so a pure Rust package fell through to the autotools default.
+
+    - **A bare `CFLAGS` cannot be made safe by naming the host's.** cc-rs *adds* it to
+      whatever `HOST_CFLAGS` says rather than choosing between them, so one in the
+      environment puts the target ABI on a host compile whatever the host value -- measured
+      on `psm` at comcerto2k, which fails on `-mfloat-abi=hard` with `HOST_CFLAGS` empty
+      and with `-O2` alike. The isolation rests on the bare flags being absent from a
+      cargo environment, which is why they stay autotools' own. A package that genuinely
+      needs one names it in its own `ENV`: `cross/nushell` does, since `aws-lc-sys`
+      builds BoringSSL through CMake, which reads the bare `CFLAGS` and nothing cc-rs
+      offers, and without the sysroot include `bcm.c` compiles against the host glibc and
+      the link ends on undefined `__isoc23_*`.
+
+    - **`cross/fish` and `cross/helix` state their target flag through `ADDITIONAL_CFLAGS`.**
+      Both named `CFLAGS_<triple>` themselves -- fish `-std=c99` for pcre2-sys under
+      gcc < 5, helix `-O3` -- and `tc_rust_vars` names it too, so whichever `ENV +=` ran
+      last took the variable whole: fish includes the framework after its own line and
+      lost the flag, helix includes it before and kept the flag while losing the sysroot
+      includes. `ADDITIONAL_CFLAGS` is deferred into `CFLAGS_<triple>`, so it
+      concatenates and both arrive. helix also drops its hand-written
+      `CC_/CXX_/AR_/RANLIB_<triple>`: they spelled the vendor path directly and so
+      ignored a gcc overlay, where the framework's come from the `tc` macro.
+
+    - **`none` holds wherever it is set.** `cross-virtual.mk` and `spk.mk` set it for
+      something that builds nothing, and each `env-<system>.mk` declines to append over
+      it -- the guard has to be local, since `env-default.mk` is last only for cross
+      packages, not for a python spk whose metas come after it (`spk-meta/python.mk`
+      reaches `wheel.mk`, which includes `env-cmake.mk`).
+
+    - **`tc_rust_vars` states the Rust identity a package reads**: `RUST_TARGET` and
+      `TC_RUSTC` as before, now `TC_RUSTUP_TOOLCHAIN` beside them, so `cross/netdata`
+      and `cross/nushell` can call `cargo +$(TC_RUSTUP_TOOLCHAIN)` without a Rust mk
+      file of their own -- that is what `invalid toolchain name ''` was. The fragment
+      also carries `RANLIB_<triple>` and `HOST_RANLIB`, which cc-rs reads through the
+      same per-triple and `HOST_*` prefixes as `AR`, and the deterministic
+      `CARGO_TERM_*` that `env-rust.mk` used to put in every environment that read it.
+
+    - **The words `cmake` and `meson` never loaded anything.** Their generated files are
+      `tc_vars.cmake`, `tc_vars.meson-cross` and `tc_vars.meson-native`, with no `.mk`
+      suffix, while the wildcard globs `tc_vars.<word>.mk`. It matched nothing for those
+      two, silently, which is exactly what hid the marker role -- the architecture page
+      already said there was no `tc_vars.cmake.mk` to pick up; only the variable name
+      implied otherwise.
+
+    - **Both are appended, never claimed with `?=`**, which cannot compose a list: the
+      first file to run claimed the variable and silenced every later one, so the result
+      depended on each package's include order. `env-default.mk`, always last through
+      `spksrc.cross-cc.mk`, supplies what nobody asked for. `flags` stays autotools'
+      companion; CMake and Meson read the flags through their own generated toolchain and
+      cross file.
+
+    - **Nothing is declared per package any more.** The explicit `env-rust.mk` includes in
+      `cross/librsvg-latest` and `cross/netdata` are gone; `cross/fish` builds crates
+      through Corrosion and declared nothing, and gets the rust tc_vars all the same.
+      `cross/znc` is the only package that declared any of this and the only one the split
+      simplifies -- three lines to one, since its `BUILD_SYSTEM` is cmake and what it
+      needed was the two fragments `znc-buildmod` reads.
+
+    - **`none`** carried both senses too, and the second was vestigial: `cross-virtual.mk`
+      does include `install.mk`, so the filter ran and set `INSTALL_ARGS` for a package
+      that installs nothing. It is now `BUILD_SYSTEM = none` with `TC_VARS_ENV` empty.
+
+    - **Note for packagers**: `HOST_CC`, `HOST_CXX` and `HOST_AR` now reach every cross
+      package's environment, since `rust` is in `TC_VARS_ENV` for all of them. For
+      autotools that is `HOST_CC`'s conventional meaning -- a compiler for the build host
+      -- and it was previously unset.
+
+    - **Documented**: [Toolchain Variable Files](architecture.md#toolchain-variable-files-tc_vars).
+
+??? note "October 7th 2026 — A git download can include submodules, and name a tag (#7549)"
+
+    - **`git archive` leaves a submodule an empty directory**, so a project whose release
+      tarball bundles its submodules could not be built from git. znc is one: its GitHub
+      archive has no `third_party/Csocket`, and the hosts carrying its release tarball
+      kept failing (znc.in's expired certificate, then a mirror that dropped it -- #7547).
+
+    - **`PKG_GIT_SUBMODULES`** lists the submodule paths to add. Each is archived at the
+      commit the superproject pins at `PKG_GIT_HASH`, from the URL its `.gitmodules`
+      gives, and appended to the tarball; `gzip -n` keeps it reproducible, so the digests
+      hold. See [Source downloads and mirrors](../developer-guide/packaging/makefile-variables.md#source-downloads-and-mirrors).
+
+    - **`PKG_GIT_TAG`** names the revision by tag instead of `PKG_GIT_HASH` (one or the
+      other), so a version bump is `PKG_VERS` and the digests.
+
+    - **znc** builds from git, at tag `znc-1.10.3`, with Csocket and cctz.
+      The release tarball's pregenerated modpython sources are not in git: the build
+      host's SWIG generates them.
+??? note "October 2nd 2026 — An optional dependency follows its own floors, not a copy of them (#7525)"
+
+    - **ffmpeg repeated every library's floor.** `ifeq ($(call version_ge,$(TC_GCC),7.5),1)`
+      around `DEPENDS += cross/vvenc` and its `--enable-libvvenc`, the same 7.5 that
+      `cross/vvenc` declares, then the package again in an `OPTIONAL_DEPENDS` list -- five
+      places to keep in step, in each of ffmpeg4 to ffmpeg8. A floor raised in the library
+      and not in ffmpeg failed the whole build instead of dropping one feature.
+
+    - **`$(call depend,<pkgs>,<switches>[,<else>])`** (`spksrc.common/macros.mk`) declares
+      the dependency optional, and `spksrc.rules/depend.mk` adds it to `DEPENDS` with its
+      switches where `dependency-unsupported` finds its tree clear for the build, passing
+      `<else>` where not. `nop` stands for no switch, `|` separates alternatives (first
+      supported wins). With one argument it is a plain `DEPENDS`.
+
+    - **Computed once per work directory**, the candidates in parallel, into
+      `depend-<package>.mk`; later parses include that file. A dependency walk never
+      computes verdicts, so the pre-check and `make check` walk the required tree only, and
+      every walk gets its own stamp directory.
+
+    - **ffmpeg4 to ffmpeg8 and tvheadend** use it for every library that comes with a
+      switch, gated or not: a library that one day stops supporting an arch then drops out
+      of the build with its switch, instead of refusing the whole package. The gates go:
+      libjxl (highway's glibc floor comes with its tree), vvenc (its `UNSUPPORTED_ARCHS`),
+      libplacebo, liblc3, openh264, libaom, svt-av1, svt-hevc, x265... Where a condition
+      lived only in ffmpeg, it moved into the library: `MIN_GCC_VERSION` 7.5 in libvmaf-2.3,
+      4.8 in libvmaf-1.5 and librabbitmq. Still plain `DEPENDS`: what has no switch (cairo,
+      flac, pngquant -- whose place first in the list matters). Still `ifeq`: tvheadend's
+      ffmpeg choice (paired with `spk/tvheadend`) and the videodriver blocks.
+
+    - **What changed in the builds**: libaom joins ffmpeg5-8 on armv7 and qoriq (the arch
+      list was ffmpeg's alone; ffmpeg4 already builds it there), and shine joins ffmpeg4 on
+      88f6281 and x86-5.2 (shine declares gcc 4.6, ffmpeg4 asked 4.8; built on 4.6.4).
+
+    - **Required alternatives**: `$(call depend,cross/a|cross/b)` with no switch picks the
+      first version whose tree supports the build, else the last, which then refuses it --
+      a virtual package in one line. Resolved in dependency walks too.
+
+    - **The order is the Makefile's**: each call leaves a placeholder in `DEPENDS` and
+      `CONFIGURE_ARGS` where it stands, and the outcome takes its place -- as an `ifeq` at
+      that line would. A package that must be built first (tvheadend's pngquant) can use
+      the macro too.
+
+    - **`make check` reports the outcome**: `optional in use` / `optional unused`.
+
+    - **Renamed to match the macro**: `spksrc.rules/depend.mk` resolves the calls; what
+      builds `DEPENDS` is now `spksrc.rules/dependency.mk` (with `spksrc.kernel/dependency.mk`),
+      its cookie `.dependency_done` (was `.depend_done`). Targets and hooks keep their names.
+
+    - **Documented**: [How DEPENDS and OPTIONAL_DEPENDS are processed](../developer-guide/packaging/makefile-variables.md#how-depends-and-optional_depends-are-processed).
+
+??? note "September 29th 2026 — CMake builds that compile Rust crates get their cross setup from the framework (#7520)"
+
+    - **cargo runs at build time, the toolchain file only at configure time.** Its
+      `set(ENV{CARGO_TARGET_<T>_LINKER} ...)` never reached the cargo that ninja starts,
+      so a cmake project building crates (Corrosion) had to rebuild the whole cross setup
+      in its Makefile: `cross/fish` carried its own arch → `RUST_TARGET` table, and a
+      comment saying `env-rust.mk` could not be included.
+
+    - **cmake builds now load the rust tc_vars** (`DEFAULT_ENV ?= cmake rust`): cargo sees
+      `CARGO_BUILD_TARGET` and `CARGO_TARGET_<T>_{LINKER,AR,RUSTFLAGS}` at build time. A
+      cmake project without Rust only gets environment variables nothing reads.
+
+    - **`tc_vars.rust.mk` also exports `CC_/CXX_/AR_<triple>`**, the names cc-rs reads for
+      a crate's build script compiling C (pcre2-sys in fish). Without them cc-rs looked for
+      a bare `x86_64-pc-linux-gnu-gcc` on the PATH. This serves `spksrc.cross-rust.mk`
+      packages as well.
+
+    - **Those three paths come from `$(call tc,...)`** like every other tool since #7523,
+      so they follow an active overlay; `RUST_TARGET_LENV` is the suffix, `$(subst)` rather
+      than a `tr` per line since `RUST_TARGET` is already lower case.
+
+    - **The toolchain file sets `Rust_CARGO_TARGET`**, which Corrosion cannot infer when
+      cross-compiling and otherwise falls back to the host triple.
+
+    - `cross/fish` is down to its one package-specific need: `-std=c99` for pcre2-sys on
+      gcc < 5.
+
+??? note "September 29th 2026 — Two exported variables were re-running their shell for every process make started (#7522)"
+
+    - **Parsing a package forked 2647 shells and took 8.4 s.** 919 of them were
+      `uname -m` and 848 `git log`, from two variables that are both exported and
+      recursively expanded: `SOURCE_DATE_EPOCH` (`spksrc.spk.mk`) and `PYTHONPATH`, whose
+      value reaches `uname` through `PYTHON_LIB_NATIVE` (`spksrc.python-crossenv.mk`).
+
+    - **make rebuilds the environment for every child process**, re-expanding each
+      exported recursive variable as it does. So the two ran their `$(shell)` once per
+      spawned shell, and each spawned shell made the other run again.
+
+    - **Both are now assigned immediately**: `SOURCE_DATE_EPOCH` behind an
+      `$(origin ...)` guard so it still yields to a value from the environment or the
+      command line, and `uname -m` hoisted into `HOST_ARCH`, which the generated
+      `python-cc.mk` already carried under that name.
+
+    - **Measured**: parse 8.40 s to 0.92 s, `work-*/PLIST` for mosquitto 19 s to 1 s,
+      `dependency-flat` for ffmpeg8 13 s to 6 s. The make database is otherwise
+      identical, variable for variable and rule for rule.
+
+??? note "September 29th 2026 — Three more variables were forking on every expansion (#7524)"
+
+    - **`AVAILABLE_TCVERSIONS` forked once per toolchain, every time it was read.**
+      `$(shell echo <arch>-<vers> | cut -f2 -d'-')` inside a `$(foreach)` over 188
+      directories, in a recursively expanded variable -- 376 forks with
+      `AVAILABLE_KERNEL_VERSIONS` beside it. `$(word 2,$(subst -, ,...))` does the same
+      split in make; no base toolchain directory carries more than one dash.
+
+    - **`INSTALL_PREFIX_VAR` ran `dirname` on a constant path**, and
+      **`tc-capability.mk` ran four `sed` over the same Makefile** for `TC_GCC`,
+      `TC_GLIBC`, `TC_KERNEL` and `TC_BINUTILS`. The first is `$(dir)`, the second one
+      pass emitting `KEY=value` and split with `$(filter)`.
+
+    - **Measured on an spk parse**, against master: 2510 forks and 8.4 s down to 459 and
+      1.1 s; stacked on #7522, 749 forks down to 244 and 1.02 s to 0.39 s. Values are
+      unchanged, and the four capability fields were compared over all 198 toolchain
+      Makefiles.
+
+    - **`:=` is not free.** `ARCHS_WITH_GENERIC_SUPPORT` was left recursive on purpose:
+      forcing it immediate costs 783 forks, because it is computed whether or not
+      anything reads it. Making a variable immediate pays only where it is actually read.
+
+??? note "September 29th 2026 — One overlay-aware tool lookup, shared by tc_vars and the packages (#7523)"
+
+    - **The generated cmake, meson and autotools files resolved tools on their own.**
+      Three shell loops in `spksrc.toolchain/tc_vars.mk` rebuilt the toolchain bin path
+      by hand and swapped in the binutils overlay with a `case` over
+      `TC_BINUTILS_TOOLS` -- a second implementation of what `$(call tc,...)`
+      (`spksrc.common/macros.mk`) already does, and the one a package is told to use.
+
+    - **They knew nothing of a gcc overlay.** `$(call tc,...)` picks
+      `TC_OVERLAY_GCC_PATH` and appends `TC_GCC_SUFFIX`; the shell copies had neither,
+      so `CC`, `CXX`, `CMAKE_C_COMPILER` and meson's `c` would all have kept pointing at
+      the vendor gcc once a gcc overlay was switched on, silently.
+
+    - **The loops are now `$(foreach)` in make**, so each path comes from
+      `$(call tc,...)` on the target side and `$(call native,...)` on the build side.
+      `TOOLS` carries one whitespace-free entry per tool -- meson's name, the
+      autotools and cmake name, the binary -- which also retires the `sed` and `tr`
+      that parsed it, and `TC_BINUTILS_TOOLS`, whose list the macro already holds.
+
+    - **`TC_PATH` and the two `TC_OVERLAY_*_PATH` are defined where they are emitted**,
+      so the generator and the `tc_vars.mk` it writes resolve a tool the same way.
+
+    - **cargo's `AR` and `LINKER` come from the macro too.** They were the last two paths
+      built by hand, so an active binutils overlay reached `ld` and `as` but not the `ar`
+      that packs the archives cargo then links.
+
+    - Output is unchanged but for one character: the seven generated files, over all
+      198 toolchains, differ from master only in `CMAKE_SHARED_LINKER_FLAGS`, which
+      carried a trailing space whenever no binutils overlay contributed a flag.
+
+??? note "September 29th 2026 — A dependency walk checks the tree once and visits each dependency once (#7521)"
+
+    - **The pre-check re-walked the whole subtree at every parse.** `_TREE_GATES` runs
+      `dependency-unsupported` over the package's tree whenever a package is parsed with
+      `ARCH`/`TCVERSION`: its own make, then its `cross-stage1` and `cross-stage2`
+      sub-makes, for every package of the build. The owner's walk had already covered all
+      of them. On an already built gstreamer, `make depend` spent 764 make calls and 42 s on
+      that (gst-plugins-base alone visited each of its dependencies 16 times).
+
+    - **Now once per WORK_DIR.** Once the tree passed, `PRECHECK_TREE_DONE` is exported with
+      the WORK_DIR it was checked for; every later parse building into that WORK_DIR skips
+      the walk. The package's own checks (capability floors, `UNSUPPORTED_ARCHS`, DSM window)
+      still run everywhere. Same gstreamer, same load: **95 make calls, 11 s**.
+
+    - **`depend_target` visits each dependency once per run** (`dep_seen`, as the PLIST walk
+      since #7516), stamps in `$(WORK_DIR)/.DEPEND`. An already built tree gains nothing
+      there, cookies already stop the recursion; a fresh build does, where a package still
+      to build walks back into dependencies another one already built.
+
+    - **Both are bound to WORK_DIR, never handed down blindly.** `DEPEND_WALK` names the
+      WORK_DIR that owns the walk; a sub-make building into another one (toolchain, toolkit)
+      checks and walks on its own instead of trusting stamps it did not write. The owner
+      clears `.DEPEND` before walking, so a failed or interrupted run leaves nothing behind;
+      `make spkclean` removes it too.
+
+??? note "September 28th 2026 — The spk PLIST is written whole or not at all, and walked once per dependency (#7516)"
+
+    - **A partial `work-*/PLIST` was taken as up to date.** The file is its own make
+      target, written straight through `> $@`. When the walk behind it broke off, a
+      `cat_PLIST` that failed, or a build whose output pipe died (an interrupted
+      `make arch-*`, a closed terminal), the partial file stayed, and every later run
+      packaged from it: a gstreamer build then succeeded with 146 of its 851 entries,
+      a 6 MB package instead of 42 MB, or stopped at `tar: Cowardly refusing to create an
+      empty archive` when nothing had been written yet.
+
+    - **Now written to `PLIST.tmp` and moved in place only once complete**, with
+      `pipefail` and a failing `cat_PLIST` stopping the walk instead of being swallowed
+      by the loop. `make spkclean` removes a leftover `PLIST.tmp`.
+
+    - **Each dependency is walked once.** `cat_PLIST` recursed into every dependency
+      once per path leading to it, a full make parse each time: gstreamer's walk made
+      at least 591 calls for 67 distinct dependencies (zlib alone 132 times), tens of
+      minutes on a loaded machine. The spk side now hands down a stamp directory, and
+      a dependency already visited is skipped before its make is started. gstreamer's
+      PLIST, same machine and load: 3603 s before, 239 s after.
+
+    - **`dep_seen` (`spksrc.common/macros.mk`) is that test**, shared with the
+      dependency-tree walk, which had its own inline copy. Stamps are named as there
+      (`cross__zlib`) and now created with `mkdir`, so two parallel visitors cannot both
+      claim one.
+
+??? note "September 28th 2026 — CMake builds always use the generated toolchain file (#7515)"
+
+    - **`CMAKE_USE_TOOLCHAIN_FILE` is gone**, and with it the "legacy" mode that passed
+      the cross toolchain through `-D_CMAKE_TOOLCHAIN_PREFIX` and friends. That mode
+      relied on `CC`/`CXX` reaching cmake through the environment, but those live in
+      `tc_vars.autotools.mk`, which cmake builds no longer load since `DEFAULT_ENV ?= cmake`
+      (#6877): cmake silently fell back to the host `/usr/bin/cc`. On aarch64 the link fails
+      (`libcairo.so: file in wrong format`); on x64 it succeeds with the wrong compiler
+      and nobody notices.
+
+    - **The two remaining users move over.** `cross/frei0r` (pulled in by ffmpeg and
+      gstreamer) and `cross/fish`, which already hands cargo its compilers through
+      `CC_<target>` / `CARGO_TARGET_<TARGET>_LINKER`.
+
+    - **The toolchain file now sets `CMAKE_MODULE_LINKER_FLAGS`** beside the EXE and
+      SHARED ones. A cmake `MODULE` library (a plugin: frei0r builds nothing else) was
+      linked without the staging `-L`/rpath and could not find its dependencies.
+
+??? note "September 28th 2026 — A plist pattern is the files it stands for, not a path (#7518)"
+
+    - **A package built on demand describes its libraries with a pattern.**
+      `cross/boost-1.92/PLIST` says `lib:lib/libboost_*.so.1.92.0`, because it does not
+      know which libraries the caller asked it to build.
+      `include_toolchain_specific_libraries` handed that to `objdump` as written -- a path
+      that does not exist -- so the files it stands for were never examined, and the
+      toolchain runtime library they needed was never carried. Silently: with no file
+      seen, the loop moved on.
+
+    - **znc 1.10.3-30 is what it cost.** boost 1.92's `charconv` and `locale` link
+      `libquadmath` for `__float128`, they were the only files in the package that did,
+      and the published package exits at start-up on
+      `libquadmath.so.0: cannot open shared object file`.
+
+    - **Each entry is now resolved inside the staging directory before it is read**, the
+      way `copy.mk` resolves it before packing, so a pattern contributes the files it
+      matches and a plain path behaves exactly as before.
+
+??? note "September 24th 2026 — The switches reach every crossing, and the spk one narrows (#7497)"
+
+    - **Eight sub-make crossings still dropped `FWRD_ARGS`**, so a build-wide switch
+      reached part of a build and not the rest. #7458 gave the switches one list; this
+      finishes carrying it.
+
+    - **What gets lost is not obvious.** A value given on the command line survives a bare
+      sub-make on its own, through `MAKEFLAGS`. A value set in a package Makefile, or left
+      at its `?=` default, does not:
+
+        ```
+        VIDEODRV from the command line   sub-make without FWRD_ARGS sees 7
+        VIDEODRV set in the Makefile     sub-make without FWRD_ARGS sees nothing
+        VIDEODRV left at its default     sub-make without FWRD_ARGS sees nothing
+        ```
+
+      So the crossings that dropped it worked for whoever typed `VIDEODRV=0` on the
+      command line, and silently did not for anyone else.
+
+    - **Now forwarded**: the `cat_PLIST` walk into a dependency and its spk-side twin (the
+      plist must describe what was built, not what a default would have built), the
+      `cross/*` dependency loop and `NATIVE_DEPENDS`, the dependency-tree walker (a tree
+      computed without the switches can name packages the build will not produce — the
+      shape of the phantom-arch bug #7431 fixed), and `kernel-required`, which recurses
+      over `BUILD_DEPENDS` and `DEPENDS` whose contents themselves vary with the switches.
+
+    - **The two native loops keep their `env -i` isolation**, deliberately and with a
+      comment saying so: they build host tools, and the one native package that cares
+      about a switch sets its own `?=` default. Forwarding a `0` into it would override
+      that default and break it, which is the opposite of what the switch means for a host
+      tool.
+
+    - **The spk → spk crossing goes the other way and gets narrower.** `FWRD_ARGS_SPK`
+      carries `VIDEODRV` alone: whether a meta is in the build at all is a decision about
+      the run, and one that disagrees links a libdrm nobody can resolve. Which compiler a
+      package builds with is not — that belongs to the package and its own work dir, so a
+      meta recomputes it rather than inheriting whatever its caller happened to choose.
+??? note "September 24th 2026 — An spk is rebuilt only when it changed, and is reproducible (#7499)"
+
+    - **Run the same build twice and the second run no longer rewrites the `.spk`.** Today
+      it does: `make arch-x64-7.2` a second time, with nothing changed, produces a fresh
+      archive with different bytes and a new timestamp. Now it sees the same content and
+      leaves the file alone. `make spkclean && make arch-x64-7.2` still regenerates
+      everything, on purpose -- `spkclean` removes the digest with the rest of the
+      packaging state, so the next build has nothing to compare against; being
+      reproducible, it comes out byte-identical anyway.
+
+    - **Which is why a `.spk`'s timestamp now means something.** It is the moment the
+      package was built, not the moment a later pass happened to touch it.
+
+    - **It was rebuilt on every invocation**, with different bytes each time, so its
+      timestamp recorded the last repackaging rather than the build. That is what made a
+      budget-stopped CI run look as though `synocli-videodriver` had been built *after*
+      ffmpeg when it had been built two hours before it.
+
+    - **`make --debug=b` names the cause**: `Prerequisite scripts/service-setup does not
+      exist` — for a file that is plainly there. `spksrc.service.mk` declares six generated
+      files `.PHONY` so a changed variable can never leave a stale one behind. The cost is
+      that make stops seeing them as files, and anything depending on them is remade
+      unconditionally.
+
+    - **The guarantee is kept and the decision moved.** A phony `spk-md5sum` target still
+      runs every time and digests what actually goes into the package; it rewrites
+      `.md5sum_done` only when that digest changes, and the `.spk` hangs off that file
+      alone. `SPK_CONTENT` is complete by then, because icons and wizards extend it from
+      inside their own recipes, which are prerequisites of the digest.
+
+    - **It is named and cleaned like the status cookies it sits beside**, and the CI
+      already collects `.*_done` into the diagnostics — unlike the empty cookies, this one
+      arrives with a readable fingerprint, which is what answers "why was this
+      repackaged". `spkclean` removes it with the rest of the packaging state: without
+      that, an explicit `spkclean` left the digest behind and the next build declined to
+      repackage at all.
+
+    - **`SOURCE_DATE_EPOCH` makes the archive reproducible**, and covers the three producers
+      at once: `tar` reads it for member dates, `gzip` needs only `-n`, and ImageMagick
+      honours it for the PNG `tIME` chunk that `-strip` does not remove. The value is the
+      last commit touching the package, so it answers "which revision is this" rather than
+      "when did you run make"; it falls back to the Makefile's mtime outside a git tree and
+      yields to the environment. git metadata survives a checkout where file mtimes do not,
+      so CI gets the same value as a workstation.
+
+    - **Being reproducible and knowing when to repackage stay separate questions.** The
+      content digest compares the mtimes on disk, not the ones written into the archive — so
+      no producer upstream has to be deterministic, the cross builds whose libraries land in
+      the staging tree included.
+
+    - **Measured** on `spk/demoservice` (noarch) and `spk/mercurial` (x64-7.1 — icon,
+      `SERVICE_SETUP`, python meta, wheels; 20 members including both PNGs and
+      `WIZARD_UIFILES`):
+
+        ```
+        two builds, nothing changed     identical, not repackaged
+        source script edited            repackaged, content changed
+        after that edit, build again    identical, not repackaged
+        two CLEAN rebuilds              identical
+        source reverted                 original bytes
+        ```
+
+??? note "September 23rd 2026 — A linker floor, for what a newer as and ld can lift (#7495)"
+
+    - **`MIN_BINUTILS_VERSION` joins the capability floors**, beside `MIN_GCC_VERSION`,
+      `MIN_GLIBC_VERSION`, `MIN_KERNEL_VERSION` and `MIN_RUSTC_VERSION`. A package states
+      the assembler and linker it needs, and the architectures whose toolchain is older
+      are refused with a reason.
+
+    - **It is a build-time floor, like gcc.** It asks what `as` and `ld` can encode and
+      resolve, and a newer binutils answers it. That distinguishes it from glibc and the
+      kernel, which ask about the machine the binary will run on and which nothing in the
+      toolchain can change.
+
+    - **`TC_BINUTILS` is declared by every toolchain**, beside `TC_GCC`, `TC_GLIBC` and
+      `TC_KERNEL`. Not one value is inferred: all 115 distinct toolchain archives were
+      downloaded and their own `<target>-ld --version` read, covering the 188
+      declarations. It comes out as one binutils per gcc generation --
+
+        | gcc | binutils | | gcc | binutils |
+        |-----|----------|-|-----|----------|
+        | 4.3.7 | 2.18.50 | | 4.9.4 | 2.25 |
+        | 4.6.4 | 2.22 | | 7.5.0 | 2.30 |
+        | 4.7.3 | 2.22 | | 8.5.0 | 2.30 |
+        | 4.8.3 | 2.24 | | 10.3.0 | 2.35.1 |
+        | 4.9.3 | 2.25 | | 12.2.0 | 2.38 |
+
+      -- but that was worth confirming rather than assuming, because the toolchains do not
+      come from one place: `88f6281` ships a Marvell build, `ppc853x` a plain GNU one,
+      the DSM 6.2.4 family crosstool-NG/Linaro, DSM 7.x plain GNU again. binutils tracks
+      the compiler, not the DSM release -- `hi3535-6.2.4` sits on gcc 4.8.3 with 2.24
+      while its 4.9.3 neighbours in the same release are on 2.25, and `comcerto2k-7.1`
+      pulls the same 4.9.3 archive as `comcerto2k-6.1` in a lineup otherwise on 8.5.0.
+
+      The span is the point: an object a current compiler emits can carry a relocation or
+      a debug format a 2008 linker never learned.
+
+    - **`bandwhich` and `dutree` are the first two converted.** Both carried
+      `UNSUPPORTED_ARCHS = $(OLD_PPC_ARCHS)` under a comment quoting
+      `unknown relocation type 95`. Reloc 95 is `R_PPC_TLSGD`, the marker `ld` needs to
+      resolve the TLS general-dynamic sequence rustc emits; binutils grew it for 32-bit
+      PowerPC on 2009-03-04 and shipped it in 2.20. Reproduced directly -- the same object
+      fails to link with `ppc853x-5.2`'s 2.18.50 and links with 2.25 and 2.30:
+
+        ```
+        ld (2.18.50): tls.o: unknown relocation type 95 for symbol x
+        ld (2.25):    ELF 32-bit MSB, PowerPC
+        ld (2.30):    ELF 32-bit MSB pie, PowerPC
+        ```
+
+      They now declare `MIN_BINUTILS_VERSION = 2.20`. Exactly one toolchain in the tree
+      falls under it -- `ppc853x-5.2` -- so the set of refused architectures is unchanged;
+      what changes is that the refusal names the linker, and lifts itself if that
+      architecture ever gets a newer one.
+
+    - **What was deliberately *not* converted.** `cross/dua` and `cross/procs` exclude the
+      same architectures under a comment quoting
+      `Dwarf Error: found dwarf version '4', this reader only handles version 2 and 3`.
+      That line is not the failure: a DWARF-4 object links cleanly on 2.18.50. It appears
+      only when `ld` already has an error to report and cannot read the debug info well
+      enough to name a file and line -- so it is 2.18.50 printing a worse diagnostic about
+      some other problem. Converting those two to a linker floor would have encoded a
+      cause that was never verified; they keep their arch list until someone reproduces
+      the real one.
+??? note "September 23rd 2026 — A rustc floor reads the toolchain the build selects (#7500)"
+
+    - **The floor answered with the oldest rustc an architecture ships.**
+      `MIN_RUSTC_VERSION` compares against `TC_RUSTC`, which came from the first entry a
+      glob over the arch's rust consumers returned — and that sorts oldest-first. It now
+      reads `TC_OVERLAY_RUSTC`, the consumer `overlay.mk` selected, which is where
+      `spksrc.toolchain.mk` resolves `TC_RUSTC` from too.
+
+    - **Latent while an arch ships one rust consumer, wrong once it ships several.** On
+      `qoriq-6.2.4` with the gcc overlay active the build receives 1.98.1, yet every floor
+      above 1.82 refused the arch — `bat-latest` (1.87), `eza-latest`, `lsd-latest` and
+      `ms-edit` (1.85), `fd-latest` (1.90), all reported as `rustc 1.82.0 < …`. All five
+      clear it now, and all five are refused again with the overlay off, where 1.82.0
+      really is what the build gets.
+
+??? note "September 28th 2026 — The host toolchain is named, not emptied (#7429)"
+
+    - **`spksrc.native/env-default.mk` emptied `CC`, `CPP`, `AR` and the rest.** That kept a
+      cross toolchain's tools from leaking into a native package built as a dependency, but
+      it also left builds that need a host compiler without one — `gcc`'s `params.list` is
+      generated by `$(CPP)`, and an empty `CPP` makes the shell *execute* the header instead
+      of preprocessing it, a failure the pipeline's `sed` then swallows. Naming the host
+      tools does both jobs.
+
+    - **`$(call native,<tool>)` joins `$(call tc,<tool>)` in `macros.mk`** — the absolute
+      path of a tool on the build host, the bare name when it is absent so a missing tool
+      fails by its own name. It uses `command -v`, a POSIX shell builtin, rather than the
+      external `which`. `spksrc.native/toolchain-rust.mk` takes it for the five host tools
+      in the rust bootstrap `config.toml`.
+
+??? note "September 19th 2026 — A kernel floor, for what no compiler can lift (#7468)"
+
+    - **`MIN_KERNEL_VERSION` joins the capability floors**, beside `MIN_GLIBC_VERSION`
+      and `MIN_GCC_VERSION`. A package declares the kernel it needs and the arch is
+      refused with a reason, instead of being listed in an `UNSUPPORTED_ARCHS` line that
+      says where it fails but never why.
+
+    - **It is a runtime floor, like glibc.** A gcc floor asks what the compiler can do,
+      and a newer compiler answers it. A kernel floor asks what the machine running the
+      binary can do; nothing in the toolchain changes that answer.
+
+    - **The Intel media stack is the case in point.** libva, gmmlib, intel-media-driver,
+      intel-mediasdk and `synocli-videodriver` talk to i915 ioctls; DSM 5.2 ships a 3.2
+      kernel that predates the render-node interface libva needs. They now declare
+      `MIN_KERNEL_VERSION = 3.10` rather than enumerating archs:
+
+        ```makefile
+        # cross/libva/Makefile
+        MIN_KERNEL_VERSION = 3.10
+        ```
+
+      `x86-5.2` and `evansport-6.2.4` (kernel 3.2.40) and `evansport-7.0` (3.2.101) are
+      refused with `kernel <version> < 3.10 (a runtime floor: no toolchain can lift it)`.
+      `x64-6.2.4` (3.10.105), `x64-7.1`, `apollolake-7.1`, `braswell-6.2.4` and
+      `x86-6.2.4` were checked to still build, and no package loses an arch it ships on
+      today: `synocli-videodriver` already stops at `REQUIRED_MIN_DSM = 6` and excludes
+      `i686_ARCHS`, and `synocli-videodriver-tools` at `6.2.4`.
+
+    - **`cross/tvheadend` gets the same floor**, because it does not have it by
+      inheritance. It adds `cross/libva` for the whole of `x64_ARCHS`, and `x86` is in
+      that list while running a 3.2 kernel -- so without a guard the floor would turn a
+      missing vaapi into an unsupported package. Guarding the `DEPENDS` leaves `x86-5.2`
+      building tvheadend exactly as before, without the video stack.
+
+??? note "September 19th 2026 — One runtime library for all of a package, not for its first binary (#7466)"
+
+    - **The copy that shipped was the one the first binary needed.**
+      `include_toolchain_specific_libraries` walked the plist, matched the first binary
+      that asked for `libatomic` / `libquadmath` / `libgfortran`, installed whichever copy
+      satisfied *it*, and stopped (`break 2`). A find by name returns every copy under the
+      toolchain root at once -- the sysroot's, the compiler's `lib64`, a multilib -- and
+      they are not the same version, so when the first binary listed is the least
+      demanding the oldest copy is what gets carried.
+
+    - **The union decides now.** Every plist `lib`/`bin` entry and every wheel `.so` is
+      read first, their required symbol versions merged, and one copy chosen that provides
+      all of it. The log line changed with it: `Providing [<versions>] for <lib>` instead
+      of `Found in <file>`.
+
+    - **Shown before and after on the same staging tree**: one binary needing
+      `GLIBCXX_3.4`/`CXXABI_1.3.9`, one needing `GLIBCXX_3.4.21`, two candidates under the
+      toolchain root. Before, the older candidate is installed on the strength of the
+      first binary alone; after, the union is
+      `[CXXABI_1.3 CXXABI_1.3.9 GLIBCXX_3.4 GLIBCXX_3.4.21]` and the copy providing all of
+      it wins.
+
+    - `_select_tclib_` is gone: the per-binary selection it implemented has no caller left.
+
+??? note "September 19th 2026 — The last spelled-out toolchain path (#7467)"
+
+    The conversion started in [#7441](https://github.com/SynoCommunity/spksrc/pull/7441)
+    and continued in [#7454](https://github.com/SynoCommunity/spksrc/pull/7454) left one
+    package behind.
+
+    - **`cross/libhdhomerun` built its own path** into
+      `toolchain/syno-$(ARCH)-$(TCVERSION)/work/...` and handed it to `CROSS_COMPILE`.
+      `CROSS_COMPILE` can only express a prefix, so it assumes the compiler is
+      `<path>/<target>-gcc` and nothing else.
+
+    - **It names its two tools instead.** Its upstream Makefile assigns `CC` and `STRIP`
+      with `:=`, and a value on the make line overrides that, so
+      `CC="$(call tc,gcc)" STRIP="$(call tc,strip)"` is enough and `CROSS_COMPILE` goes.
+
+    - Byte-identical output before and after on `88f6281-6.2.4` and `x64-7.1`: the
+      binary, the shared library and every installed header.
+
+??? note "September 19th 2026 — The overlay binutils was built with no optimisation at all (#7469)"
+
+    - **An `ENV` line above the include never wins.** `native/binutils-2.30` set
+      `ENV += CFLAGS="-O2"` before including the native front-end, and `env-default.mk`
+      appends its own `ENV += CFLAGS="$(NATIVE_CFLAGS)"` when that include is read.
+      `NATIVE_CFLAGS` is empty, and the last assignment wins in `env VAR=... cmd` -- so
+      `CFLAGS=""` reached configure and make, which also overrides the `-O2` configure
+      would otherwise have chosen. Every published binutils overlay, v1 and v2, is an
+      unoptimised build.
+
+    - **Set `NATIVE_CFLAGS`, don't append to `ENV`.** It is the variable
+      `env-default.mk` reads, so filling it is order-independent and cannot be undone by
+      moving a line. (`native/gcc-8.5` escapes the trap only because its `ENV` line
+      happens to sit below its own include.)
+
+    - **What it buys**, measured on `qoriq-6.2.4`, same host, three runs: `as` on a 2 MB
+      `.s` goes 0.83-0.98s to 0.39s for ten assemblies (~2.2x), `ld -r` 0.31-0.33s to
+      0.24-0.25s for fifty (~1.3x). `ld` shrinks 3441688 to 2929056 bytes, `as` 2491896
+      to 1834688.
+
+    - **`--disable-install-libbfd` goes with it.** The consumers symlink
+      `usr/local/bin/<target>-{ld,as}` and nothing else, but the archive shipped
+      `libbfd.a` and `libopcodes.a` -- and `-ffat-lto-objects` holds both IR and objects
+      in them. On `x86-5.2` that was 7.3 MB and 2.6 MB against 2.3 MB for the whole of
+      `bin/`. The archive goes 9.1 MB to 2.5 MB, below even the unoptimised v1 at 3.1 MB.
+
+    - **v3 archives** are published for the five archs that have a binutils overlay, and
+      each consumer pins the new rev.
+
+??? note "September 19th 2026 — `make digests` in a toolchain folder, without moving the rules (#7465)"
+
+    - **`make digests` worked everywhere except the three front-ends.** `toolchain`,
+      `kernel` and `toolkit` include `spksrc.rules.mk` before `checksum.mk`, and
+      `generate-digests.mk` names its rule `$(DIGESTS_FILE)`. A target name is fixed when
+      its rule is *parsed*, so the variable was still empty there and the rule was named
+      after nothing: `make digests` answered "Nothing to be done".
+
+    - **The one-line fix is in the rule file.** `generate-digests.mk` now declares
+      `DIGESTS_FILE ?= digests` itself, right above the rule that needs it. `checksum.mk`
+      still owns the value; the `?=` only makes the name exist early enough to be a target.
+
+    - **Reordering the includes is not the fix**, which #7464 found out the hard way.
+      Moving `spksrc.rules.mk` below `patch.mk` made toolchain patches apply from the
+      wrong directory, and `patch` then asks "Skip this patch? [y]" on the same stdin the
+      patch arrives on: the question is eaten, the answer never comes, and the build hangs
+      until the job's hard timeout. Ten CI archs were killed at 5h48 having built nothing,
+      where the run before finished the same archs in 2h09 to 4h30. The include order is
+      restored.
+
+    - **A resolved target is not a built one.** `make -n` resolved the reordered tree
+      perfectly; only an actual build reaches the `patch` recipe. Framework changes to
+      these three front-ends need a real toolchain, kernel and toolkit built end to end,
+      which is how this one was checked -- digests regenerated byte-identical included.
+
+??? note "September 15th 2026 — One list carries the build-wide switches (#7458)"
+    - **Written out at every crossing.** A switch only means something downstream if it
+      survives the process boundary, and `OVERLAY_RUSTC` / `OVERLAY_BINUTILS` were spelled
+      out by hand at each one. Eleven call sites provision a toolchain or a toolkit, and
+      they had already drifted: `cross-cc.mk` forwarded the selectors to `tcvars`,
+      `spk.mk` and `kernel.mk` called the same target without them.
+    - **Silent when it goes wrong**, which is what makes it worth fixing: the child falls
+      back to its own `?=` default and resolves a different toolchain. Nothing errors, the
+      build just uses another compiler, or provisions an overlay nobody asked for.
+    - **Declared once, beside the switch:**
+
+        ```makefile
+        # mk/spksrc.common/overlay.mk
+        FWRD_VARS += OVERLAY_RUSTC OVERLAY_BINUTILS
+
+        # mk/spksrc.common.mk
+        FWRD_ARGS = $(foreach v,$(sort $(FWRD_VARS)),$(v)='$($(v))')
+        ```
+
+      and every crossing reads `$(FWRD_ARGS)`, in one shape:
+      `@$(MAKE) WORK_DIR=<dir> $(FWRD_ARGS) --no-print-directory -C <dir> <target>`.
+      The toolkit calls carry it too, where the switches mean nothing today: carving out
+      exceptions is what let the `tcvars` calls drift apart in the first place.
+    - **Placement is load-bearing.** `FWRD_ARGS` sits between the include that declares the
+      names and `stage0.mk`, whose `$(shell)` is the first crossing to read them; put it
+      lower and a switch assigned in a package Makefile is lost. Only a makefile assignment
+      shows this -- a value from the command line arrives regardless, make exporting those
+      to its children.
+    - **Two variables, not one.** `FWRD_VARS` holds names and `FWRD_ARGS` the pairs, so the
+      conversion is idempotent: `spksrc.common.mk` is read three times for a cross package
+      and twice for a native one, and a single variable would re-convert its own output
+      into `OVERLAY_BINUTILS='0'=''`.
+    - **What belongs in the list**, and what does not: a decision that must hold
+      identically for every package of the run. The overlays qualify (a shared ABI);
+      `GCC_DEBUG_INFO` and `GCC_NO_DEBUG_INFO` do not -- they are per-package, set by
+      `spk/tvheadend` and by `cross/llvm-140` and the intel stack respectively, and the
+      list crosses into *other* packages, where one package's choice must not be imposed.
+      `supported.mk` carries both by hand instead, as arguments rather than the
+      environment prefix it used -- the prefix loses to a package's own assignment, an
+      argument does not -- and only when set, an empty one being an override of its own.
+    - **The two debug switches now refuse each other.** `env-default.mk` let
+      `GCC_DEBUG_INFO` win by if/else while `cmake`, `ninja` and `install` tested
+      `GCC_NO_DEBUG_INFO` on its own and stripped anyway -- a build that compiled symbols
+      and then threw them away. Setting both is now an error.
+    - **`TC_GCC` stops being re-derived.** `env-default.mk` put it into every build's
+      environment by running the cross compiler -- `TC_GCC=$$(eval $$(echo …gcc
+      -dumpversion))`, 61 times in one tvheadend build -- for a value `tc_vars.mk` had
+      already written beside it. It now reads `$(TC_GCC)`, like the `TC_GLIBC` and
+      `TC_KERNEL` lines under it. Same answer on every arch measured; and one answer
+      rather than two, which matters once an overlay makes the vendor compiler the
+      wrong one to ask.
+    - **`VIDEODRV` is the first to use it.** #7455 landed it with the name spelled out in
+      `depend.mk`'s `env -i`; it is now `FWRD_VARS += VIDEODRV` and `$(FWRD_ARGS)`, which
+      also promotes it from an environment prefix to a command-line variable there.
+    - **Package-facing:** nothing to change. A new build-wide switch is one line,
+      `FWRD_VARS += <NAME>`, next to where it is declared.
+
+---
+
+??? note "September 13th 2026 — An automatic build does what the change asks for, no more (#7455)"
+    - **The cost.** `synocli-videodriver` is the heaviest build in the tree -- mesa, the
+      Intel compute runtime, the graphics compiler, Vulkan, shaderc -- and it changes
+      almost never. Every automatic run that touched an ffmpeg consumer paid for it
+      again, because `spk/ffmpeg*` declares `VIDEODRV_PACKAGE` and the meta follows.
+    - **`VIDEODRV = 0`** drops the meta and every option that depends on it:
+      `META_DEPENDS` is empty, `spk/synocli-videodriver` leaves `BUILD_DEPENDS`,
+      `synocli-videodriver-tools` leaves `SPK_DEPENDS`, `cross/ffmpeg4-8` configure without
+      `--enable-libdrm`, `--enable-vaapi`, `--enable-libmfx`, the OpenCL/Vulkan set and
+      `--enable-libplacebo`, and `cross/tvheadend` without `--enable-vaapi`/`--enable-qsv`.
+      Anything else (`--enable-v4l2-m2m`) is untouched.
+      Undeclared builds as before, which is what a local tree does; `make setup` writes it
+      commented into `local.mk`, below the overlay switches and reading the same way --
+      command line > environment > `local.mk` > the default. Unlike them, only an explicit
+      `0`/`off` leaves the meta out: an unexpected value builds, rather than quietly
+      publishing an ffmpeg with no acceleration and no error to show for it.
+    - **Who sets it.** Only the automatic CI runs (`push`, `pull_request`), and only when
+      change detection did not already name `synocli-videodriver` or its tools package --
+      a change under `cross/libva`, `cross/mesa` or any other videodriver dependency
+      does name it through the dependency list, and that run builds the meta in full.
+      A manual `workflow_dispatch` never sets it, so published packages always carry
+      hardware acceleration. It also crosses the `env -i` that isolates an spk meta
+      source (`depend.mk`): a meta that disagreed with its consumer linked a libdrm the
+      consumer then could not resolve -- `libavutil.so: undefined reference to
+      'drmGetVersion'`.
+    - **The CI list stopped injecting metas** while it was at it. `prepare.sh` resolved
+      `PYTHON_PACKAGE` / `FFMPEG_PACKAGE` / `VIDEODRV_PACKAGE` recursively and added each
+      meta to the list of packages to build -- redundant, since `python.mk`, `ffmpeg.mk`
+      and `videodriver.mk` each put `spk/<meta>` in `BUILD_DEPENDS` and the dependent
+      builds it anyway. It also built metas for architectures the dependent refuses:
+      `spk/homeassistant` declares `UNSUPPORTED_ARCHS = $(ARMv7_ARCHS)`, yet armv7 spent
+      a full run on the injected `python314`. Such a run now builds nothing.
+    - **And a clean that no longer happens.** `build.sh` assembled `packages_to_keep` from
+      its `ffmpeg_versions` / `python_versions` arrays and never read it: the per-package
+      clean it shielded those artifacts from is gone, the runners having grown enough disk
+      this year to hold every work dir for a whole run. All three are removed.
+
+---
+
+??? note "September 13th 2026 — Ask the toolchain for a tool, never spell its path (2 PRs)"
+    A package that needs a compiler or a binutils tool by *path* used to write
+    `$(TC_PATH)$(TC_PREFIX)gcc`. That is right only while the toolchain is the vendor one:
+    an overlay lives somewhere else entirely (`<consumer>/work/install/usr/local/bin`
+    against `<work>/<target>/bin`) and its gcc family carries a version suffix, so the
+    hand-built path silently keeps resolving to the vendor tool with an overlay active --
+    no error, just the wrong compiler. `$(call tc,<tool>)` answers the question instead.
+
+    ??? note "`$(call tc,<tool>)`, and the packages that spelled paths (#7441)"
+        - **The macro** takes a tool name and returns its absolute path, through
+          `TC_OVERLAY_GCC_PATH` for the gcc family (`gcc` `g++` `c++` `cpp` `gfortran`,
+          plus `TC_GCC_SUFFIX`), through `TC_OVERLAY_BINUTILS_PATH` for binutils
+          (`ld` `as` `ar` `nm` `ranlib` `strip` `objdump` `objcopy` `readelf`), and
+          through `TC_PATH` for anything else. `TC_OVERLAY_<c>_PATH` is empty unless that
+          overlay is *active*, so a call is already correct with no overlay and stays
+          correct when one is grafted on -- nothing to revisit in the package.
+        - **`TC_OVERLAY_GCC_PATH` is emitted too**, empty today since no gcc overlay
+          exists yet. The contract is whole, so switching one on needs no change here.
+        - **Converted**: `cross/fish`, `haproxy`, `libcap`, `libcap_2.51`, `lua`,
+          `lua-5.3`, `lzip`, `lzlib`, `pgvector`, `plzip`, `postgis`, `unzip`, and the
+          `meson` crossfile and python-crossenv generators.
+        - Documented under [Macros](../reference/macros.md#toolchain-tools).
+        - Pull request: [#7441](https://github.com/SynoCommunity/spksrc/pull/7441)
+
+    ??? note "ffmpeg and x264: name every tool instead of deriving it (#7454)"
+        `--cross-prefix` was ffmpeg's single answer for nine tools, and it derives them by
+        string concatenation -- precisely the hand-built path the macro exists to replace.
+        - **Every tool is named**: `--cc`, `--cxx`, `--ar`, `--nm`, `--ranlib`, `--strip`,
+          each `$(call tc,...)`, so each follows whichever overlay provides it. `as`, `ld`
+          and `dep_cc` still default from `cc` inside configure, which is what we want;
+          `--enable-cross-compile`, which `--cross-prefix` used to imply, is now stated
+          and leads the block; `--ranlib` no longer goes through `$(RANLIB)`.
+        - **The x86 assembler is not `as`.** `--x86asmexe=nasm` on the i686/x64 families
+          is unchanged and stays a plain name: that nasm is a *native* tool, not a cross
+          one, so it is deliberately not a `$(call tc,...)`.
+        - **x264** takes `CC` from the environment (`CC="${CC-${cross_prefix}gcc}"`), so
+          naming it there is enough.
+        - One switch per `CONFIGURE_ARGS` line throughout the tool block, so a diff shows
+          which tool changed.
+        - Pull request: [#7454](https://github.com/SynoCommunity/spksrc/pull/7454)
+      a full run on the injected `python314`. Such a run now builds nothing. The exemption
+      that kept an injected meta in the standard builds goes with it: every list now holds
+      only what declares that `REQUIRED_MIN_DSM` itself, and none of them may be exempt.
+
+---
+
+??? note "September 7th 2026 — The build tree owns its tc_vars, the toolchain owns none (#7442)"
+    - **What was shared:** `toolchain/syno-<arch>-<vers>/work` held one `tc_vars*` set.
+      `tcvars` short-circuits to an empty target once its cookie exists, so the *first*
+      build to reach a toolchain fixed that file and every build after inherited it --
+      in both directions. A build that wanted an overlay never got it provisioned; one
+      that did not was handed `TC_EXTRA_LDFLAGS` / `TC_OVERLAY_*` / `TC_GCC_SUFFIX` it
+      never asked for. A file shared by every build tree has no correct owner, so there
+      is no longer a file.
+    - **Each tree generates its own**, in its own work dir, and reads nothing else.
+      `WORK_DIR` already carried that scope: `depend.mk` passes the root's value down
+      through `$(ENV)`, `directories.mk` keeps what it is handed (`ifndef`), and the
+      `env -i` around an spk meta source is where one tree ends and the next begins:
+
+        ```
+        toolchain/syno-x64-7.1/work    (nothing)
+        cross/libpng/work-x64-7.1      libpng-1.6.50  zlib-1.3.2  install  tc_vars.*
+        cross/zlib/work-x64-7.1        (nothing -- zlib is unpacked and built in libpng's)
+        ```
+
+      Two builds may therefore run side by side against the same toolchain -- two SPKs,
+      or a cross package built directly to test it -- each with its own answer.
+    - **`stage0`** writes the tree's `tc_vars.mk` at parse time and includes that rather
+      than the toolchain's. Only the identity file: the other four embed
+      `INSTALL_PREFIX`-derived paths, and `INSTALL_PREFIX` is recipe environment that
+      `$(shell)` cannot see that early. It needs no extracted toolchain either, every
+      value in it being a constant of `toolchain/syno-*/Makefile`, so **`TC_GCC` now
+      resolves on a cold tree** and the heavy bootstrap keys on the extracted
+      `$(TC_TARGET)` instead of a generated file.
+    - **Ahead of the pre-check.** The generation is unconditional and runs before an arch
+      can be refused, so a refused package still leaves a work dir holding what the
+      refusal was judged against -- `spk/tvheadend/work-ppc853x-5.2/tc_vars.mk` with its
+      `TC_GCC := 4.3.7`.
+    - **Package-facing:** nothing to change. `make -C toolchain/<TC> toolchain` now only
+      downloads, extracts and patches; anything that read `toolchain/*/work/tc_vars*`
+      should read the build's own work dir instead.
+    - **The dependency walk goes with it.** `dep-flat-mk-%` recursed without forwarding
+      `WORK_DIR`, so every package it visited wrote a `tc_vars.mk` of its own: a single
+      `make check` left 141 work directories behind for a command that builds nothing. It
+      now forwards it as `depend.mk` does through `$(ENV)`, and the walk reads the root's.
+
+??? note "September 7th 2026 — An arch exclusion says why, and names every blocker (#7439)"
+    - **Seven restated floors gone.** `spk/tvheadend`, `chromaprint`, `comskip` and
+      `spk/ffmpeg5-8` each declared `MIN_GCC_VERSION = 4.9`, restating what their own
+      `cross/` package declares -- and `cross/<same>` is a direct `DEPENDS`, so the walk
+      finds it. Declare a floor on the `cross/` package, where the requirement is a fact
+      about the code; the `spk/` inherits it by being walked. Verdicts unchanged.
+    - **`make check-<arch>-<tcvers>`** reports every capability gate a package's whole
+      dependency tree fails for that architecture, or answers `<arch>-<vers> check: OK`.
+      `make ARCH=x86 TCVERSION=5.2 check` is the same thing with the pair in variables.
+      A pure diagnostic: it extracts no toolchain and builds nothing, it reads the floors
+      declared across the tree.
+    - **The pre-check names every gate, not the first.** A package is as blocked by a floor
+      it never declared as by one it did, and the pre-check only ever saw its own -- so
+      removing the blocker it named revealed the next, one build at a time. It now runs the
+      same walk and lists all of them before stopping:
+
+        ```
+        ===>  check: cross/x264 gcc 4.3.7 < 4.6
+        ===>  check: cross/python314 gcc 4.3.7 < 4.8
+        ===>  check: cross/ffmpeg8 gcc 4.3.7 < 4.9
+        ...
+        pre-check.mk:80: *** Arch 'ppc853x-5.2' is not supported by tvheadend
+            (18 failed check(s) in the tree).  Stop.
+        ```
+
+        It reuses `dependency-flat`'s walk, which already stamps each package so a diamond
+        is visited once, already forwards ARCH/TCVERSION so every package evaluates its own
+        conditional `DEPENDS`, and already sets `DEPENDENCY_WALK=1` so a refused package
+        reports instead of aborting. `DEP_FLAT_VERDICT` makes each package visited print its
+        own verdict, so one walk yields both the tree and every gate in it.
+
+        Cost is one walk per parse -- 2.8s warm on tvheadend's 141-package tree, against
+        builds measured in tens of minutes. Verdict-neutral on the archs measured: every
+        `spk/` package across x64-7.1, 88f6281-6.2.4 and ppc853x-5.2 gives the same
+        refused/allowed set as before. What changes is that the whole story is told at once.
+    - **What was missing:** `UNSUPPORTED_ARCHS` states *where* a package fails and never
+      *why*, and the archs are often added by an include rather than by the package -- so
+      the message named a package with no such list in its own Makefile.
+      **`UNSUPPORTED_ARCHS_REASON`** is now carried into the refusal in parentheses:
+
+        ```
+        Arch 'ppc853x' is not a supported architecture (go has no 32-bit PowerPC target)
+        ```
+
+        `spksrc.cross/env-go.mk` and `env-dotnet.mk` say theirs. A capability floor is
+        still the better answer where one fits; this is for exclusions that are not
+        capability checks.
+    - **One accumulator instead of two.** `_tc_cap_join` accumulated
+      `TC_CAPABILITY_UNSUPPORTED` and `unsupported_reason_join` accumulated
+      `UNSUPPORTED_ARCHS_REASON` -- the same operation under two names, and the second was
+      not a macro at all (no argument, just a lazy read of a global). Both are now
+      **`$(call comma_append,<list>,<item>)`**.
+    - **A `$(,)` that expanded to nothing.** `spksrc.common.mk` defined `empty` / `space` /
+      `$(,)` *below* every `spksrc.common/` include, so an included file expanding `$(,)`
+      in a `:=` assignment got the empty string -- which is why `tc-capability.mk` carried
+      a private comma variable. The utility block moved above the includes.
+    - **`spksrc.cross/env-dotnet.mk`** lost 26 tab-indented lines sitting outside any
+      recipe, and its `$(error)` became a `$(warning)`: an unsupported arch should be
+      reported by the pre-check, not by a parse abort in an env file.
+    - **Package-facing:** nothing to change. Add `UNSUPPORTED_ARCHS_REASON` alongside an
+      `UNSUPPORTED_ARCHS` you introduce, and the refusal will carry it.
+
+??? note "September 4th 2026 — Build logs keep what the console showed (#7396)"
+    - **What was lost:** a package refused by a pre-check left a build log holding a
+      single line. `$(error)` fires at **parse** time, so no recipe of the inner make
+      ever runs -- and the teeing lived inside a recipe. The reason for the refusal,
+      make's own `*** ... Stop.` and the `Error 1` cascade all went to the console
+      alone, and the `[BEGIN]`/`[END]` markers only ever reached `status-build.log`.
+
+        ```
+        before                                  after
+        BUILDING package for arch x86-5.2 ...   BUILDING package for arch x86-5.2 ...
+                                                ... [BEGIN]
+                                                ../../mk/spksrc.rules/pre-check.mk:65: ***
+                                                  Arch 'x86-5.2' is not supported by
+                                                  python314: gcc 4.7.3 < 4.8.  Stop.
+                                                ... [END]
+        ```
+
+    - **Teeing moved one level up.** It now happens in `arch-%`, *above* the make that
+      fails, so that make's output and its exit cascade both pass through the pipe.
+      A parse-time `$(error)` produces no recipe to tee from, which is why writing the
+      message by hand was not enough on its own.
+    - **`precheck_fatal`** replaces nine copies of the same `ifneq`/`shell`/`error`
+      block and sends one message to all three readers: the console, the package's
+      build log, and the CI's collected unsupported list. It also fixes a timestamp
+      in that list -- written `$(date --date=now ...)` it was *make* expanding an
+      undefined variable, so every line began with a bare `" - "`; escaped to
+      `$$(date ...)` the shell runs it.
+    - **One logging mechanism instead of two.** `LOG_WRAPPED` and the new helper
+      carried the same body -- `script(1)` for a pty so **stderr** is captured too,
+      `sed` to strip ANSI on the way to the file, and a `LOGGING_ENABLED` guard so
+      exactly one level tees and nothing is written twice. They are now `_runlog`
+      (the shell fragment, underscored because it needs `pipefail` and bash from its
+      caller) and **`RUNLOG`** (the facade: builds the make command from a goal,
+      writes to `DEFAULT_LOG`, reports failure to `STATUS_LOG`). `LOG_WRAPPED` is
+      gone; nine call sites renamed, no behaviour change.
+    - **Toolchain lines name their directory.** A status line for an overlay consumer
+      logged an empty arch and called itself `toolchain`, because the branch meant for
+      it was guarded on `$(TC_NAME)$(TC_VERS)` and a consumer sets `TC_VERS` but no
+      `TC_NAME`. Both branches now use the directory name minus its `syno-` prefix, so
+      every overlay is visible:
+
+        ```
+        ARCH: qoriq-6.2.4                            NAME: toolchain
+        ARCH: qoriq-6.2.4_rust-1.82_gcc-4.9.3        NAME: toolchain
+        ARCH: 88f6281-5.2_binutils-2.30              NAME: toolchain
+        ```
+
+      Neither `TC_NAME` nor `TC_ARCH` can do this alone: a consumer sets no `TC_NAME`,
+      and on the generic toolchains `TC_ARCH` holds the reference model, so
+      `syno-aarch64-6.2.4` would have logged `rtd1296` and `syno-x64-7.1` `apollolake`.
+    - **`TIME_CMD`:** GNU `time(1)` is now resolved by path. The recipes that pipe need
+      bash for `pipefail`, and under bash `time` is a keyword that rejects `-o`, so
+      `PSTAT_TIME` broke as soon as the teeing recipe switched shells. Empty if absent,
+      which simply disables `PSTAT`.
+    - **Known limit:** an error can only be captured one level above the make that
+      fails, so the outermost `make: *** [arch-x64-7.1] Error 2` is structurally
+      unreachable -- there is no outer make to tee it.
+    - **Package-facing:** nothing changes for a successful build -- one `[BEGIN]`, one
+      `[END]`, no duplicated output. A package that calls the old `LOG_WRAPPED` should
+      use `RUNLOG`.
+    - Pull request: [#7396](https://github.com/SynoCommunity/spksrc/pull/7396)
+
+??? note "September 4th 2026 — Link librt and libatomic instead of discarding them (#7433)"
+    - **What:** `TC_EXTRA_LDFLAGS` no longer wraps `-lrt` / `-latomic` in
+      `-Wl,--as-needed ... -Wl,--no-as-needed`:
+
+        ```makefile
+        TC_EXTRA_LDFLAGS = $(TC_EXTRA_BUILD_FLAGS) $(_tc_ld_syslibs)
+        ```
+
+    - **Why:** `--as-needed` keeps a library only if it resolves a symbol that is
+      *already* undefined when the linker reaches it. `LDFLAGS` is placed **before**
+      the objects and libraries being linked, so nothing is undefined yet and the
+      bracketed `-lrt` was dropped every time. The declaration introduced by #7314
+      was therefore inert — measurably identical to declaring nothing:
+
+        ```
+        -Wl,--as-needed -lrt -Wl,--no-as-needed ... -lsrt
+            -> undefined reference to `clock_gettime'
+        (nothing declared at all)              ... -lsrt
+            -> undefined reference to `clock_gettime'
+        -lrt                                   ... -lsrt
+            -> links, DT_NEEDED librt
+        ```
+
+    - **How it surfaced:** on glibc &lt; 2.17 toolchains (`ppc853x-5.2`,
+      `88f6281-5.2`, `88f6281-6.1`), `libsrt.so` calls `clock_gettime` without
+      declaring it. ffmpeg reported the resulting link failure as
+      `ERROR: srt >= 1.3.0 not found using pkg-config`, which reads as a missing
+      dependency rather than a missing library.
+    - **Package-facing:** the five per-package workarounds it forced are gone —
+      `cross/ffmpeg4` through `cross/ffmpeg8` each carried
+
+        ```makefile
+        ifeq ($(call version_lt,$(TC_GLIBC),2.17),1)
+        CONFIGURE_ARGS += --extra-ldflags="-lrt"
+        endif
+        ```
+
+      to put back what the toolchain had already declared. A package should not have
+      to re-declare a toolchain library; if you have such a workaround, drop it.
+    - **Cost:** one `DT_NEEDED` entry on binaries that never call into `librt` or
+      `libatomic`. Both are part of the toolchain's own runtime and present on every
+      target that ships them.
+    - **Also in this PR:** `dependency-list` now keys its output on the package
+      **folder** instead of `$(NAME)`. Three packages set `SPK_NAME` to something
+      else — `spk/ffmpeg4` (`ffmpeg`), `spk/mkvtoolnix-22` (`mkvtoolnix`),
+      `spk/mono-58` (`mono`) — while every consumer of the list already looked the
+      key up as a directory (`.github/actions/prepare.sh`, `spk-meta/base.mk`). The
+      three silently fell out of the CI build matrix, and the latter two collided
+      with the `mkvtoolnix` / `mono` folders that still exist beside them. This is
+      the rule `SPK_FOLDER` already states in `spksrc.rules/pre-check.mk`. The
+      hand-maintained fixup list in `prepare.sh` (`nzbdrone -> sonarr3`,
+      `python -> python2`, both stale) is removed with it.
+    - **Confirmed:** with DSM 5.2 switched on for the run, `cross/ffmpeg4` -- the only
+      package in the tree with no `MIN_GCC_VERSION`, and so the only one that reaches
+      a pre-2.17 toolchain -- built on both, with its workaround removed:
+
+        ```
+        ffmpeg4: (ppc853x-5.2) DONE      glibc 2.8, gcc 4.3.7
+        ffmpeg4: (88f6281-5.2) DONE      glibc 2.15, gcc 4.6.4
+        ```
+
+    - Documented in
+      [Extra flags a toolchain can declare](../framework/toolchain.md#extra-flags-a-toolchain-can-declare).
+    - Pull request: [#7433](https://github.com/SynoCommunity/spksrc/pull/7433)
+
+??? note "August 17th 2026 — Custom from-source Rust toolchains, and the overlay family (#7353)"
+    - **What:** the archs `rustup` ships no usable prebuilt `rust-std` for now build
+      Rust **from source** — `native/rustc-1.82` produces a `rust-<id>-<rev>.txz`, a
+      per-arch consumer under `toolchain/syno-<arch>-<dsm>_rust-<vers>_gcc-<gcc>/`
+      downloads it, and the base toolchain pulls that in through `DEPENDS`. Tier-3
+      PowerPC e500 (`qoriq`, `ppc853x`) has no prebuilt std at all; ARMv5 `88f6281` and
+      `x86-5.2` only ship one built against a newer glibc than DSM provides.
+    - **Why it matters beyond Rust:** it introduces the **`OVERLAY_<component>`** family
+      — a component shipped *beside* a base toolchain rather than replacing it. Rust and
+      binutils 2.30 are the first two; a gcc-8.5 overlay is the next. Every decision is
+      resolved once, in `mk/spksrc.common/overlay.mk`, which keeps three questions
+      apart: *available* (`TC_OVERLAY_<c>` — the consumer dir), *requested*
+      (`OVERLAY_<c>`), *active* (`OVERLAY_<c>_ON`). Conflating them is what produced the
+      bugs this split now prevents.
+    - **Switches**, written to `local.mk` by `make setup` and overridable per build:
+
+        ```bash
+        OVERLAY_BINUTILS=1 make -C cross/bat-0.25 arch-qoriq-6.2.4
+        ```
+
+        with precedence `command line > environment > local.mk > defaults`. A request
+        that cannot be honored degrades to the stock tools and says so in a banner
+        rather than failing. `make help` in `cross/`, `spk/` and `diyspk/` prints the
+        switches, the value in effect, and what it resolves to for your arch.
+    - **Arch issues fixed along the way:** per-target rustflags, so the PowerPC SPE
+      codegen options actually reach the compiler (`-Ctarget-cpu=e500
+      -Ctarget-feature=+spe`, not `+efpu2`) — the qoriq `bat`/`lsd` SIGILL of #7304; the
+      ppc853x TLS/PIE relocations, by routing only the Rust link through binutils 2.30
+      while C keeps the vendor `as`/`ld`; and `AtomicU64` on 32-bit, by widening the
+      target spec wherever the arch's gcc ships `libatomic` (which unblocked `helix` on
+      qoriq).
+    - Package-facing: nothing changes on a standard arch. On a legacy one, a package
+      that needs a newer toolchain than these pin should say so with `MIN_RUSTC_VERSION`
+      / `MIN_GLIBC_VERSION` rather than an arch list. See [Toolchain: custom from-source
+      Rust](toolchain.md#custom-from-source-rust-toolchains).
+    - **Choosing instead of refusing:** a floor refuses an arch, but the `cross/<pkg>`
+      virtuals have to pick a version of themselves instead. `TC_RUSTC` is now published
+      beside `TC_GCC` / `TC_GLIBC` / `TC_KERNEL` — the rustc a toolchain pins, or
+      `stable` when it uses rustup's newest — so a virtual routes with
+      `$(call version_ge,$(TC_RUSTC),<vers>)`. `cross/bat`, `cross/ripgrep`, `cross/lsd`
+      and `cross/eza` moved off `$(ARMv5_ARCHS) $(PPC_ARCHS)`, which had been standing in
+      for "pinned to rustc 1.82" and so silently missed `x86-5.2`, a fourth arch this PR
+      pins. `cross/helix` likewise replaced its ARMv7L exclusion with
+      `MIN_GCC_VERSION = 4.9`: its C++ tree-sitter grammars build with `-std=c++14`,
+      which g++ rejects before 4.9. Same story for the `$(OLD_PPC_ARCHS)` exclusions on
+      the rust packages, which already named their reason in a comment: `cross/bat` and
+      `cross/fd` reach `pipe2` through a dependency crate, so they declare
+      `MIN_GLIBC_VERSION = 2.9`; `cross/ripgrep`'s pcre2 wants `-std=c11`, so
+      `MIN_GCC_VERSION = 4.6`. Those lists read "except qoriq" while `qoriq-5.2` runs the
+      same glibc 2.8 and gcc 4.3.7 as `ppc853x`, so the floors refuse an arch the lists
+      let through. `cross/sd` and `cross/eza` lose their exclusion outright: their only
+      blocker was std's own `pthread_setname_np`, which the weak-link patch above
+      resolves, and both are confirmed building and running on ppc853x (@hgy59) — so
+      `synocli-file` ships them there.
+    - Pull request: [#7353](https://github.com/SynoCommunity/spksrc/pull/7353)
+
+??? note "July 24th 2026 — Host a native build's output as a reusable archive (#7327, #7386)"
+    - **What:** a new opt-in step, `spksrc.build/archive.mk` (included by
+      `spksrc.native-cc.mk`), tars a native package's install tree into a release
+      archive after `install`, so an expensive tool is built once and re-consumed
+      via `DEPENDS` instead of rebuilt from source. A package enables it with a
+      single line:
+
+        ```makefile
+        ARCHIVE_NAME = native-$(PKG_NAME)-$(PKG_VERS)
+        ```
+
+      The rest defaults — `ARCHIVE_EXT` (`txz`, mapped to the tar compression like
+      `extract.mk` does in reverse), `ARCHIVE_DIR` (`$(WORK_DIR)`) and `ARCHIVE_KEEP`
+      (`./install`) — with an optional debug-symbol strip and `ARCHIVE_EXCLUDES`. It
+      follows the usual `pre_/archive_target/post_` pattern (override `ARCHIVE_TARGET`,
+      or set it to `nop`), runs automatically from `_all`, is a **no-op unless
+      `ARCHIVE_NAME` is set**, and is guarded by a status cookie like every other step
+      (`extract`, `compile`, ...) so it runs once per work dir. `print-archive-name`
+      lets a generator resolve the name without building.
+    - **Also:** `nativeclean`, the native counterpart of `spkclean`, drops the master
+      package's build cookies so every step re-runs on the next make while keeping the
+      work dir; and the variables carry no redundant `NATIVE_` prefix (`ARCHIVE_*`,
+      matching `ARCHIVE_CMD` / `ARCHIVE_COOKIE`). The step just runs and lets `tar`
+      fail if nothing was built, rather than pre-checking a sentinel.
+    - **Why:** the archive step was open-coded per package (`native/llvm-14.0-build`
+      carried its own `build-archive` recipe); this factors it into one shared,
+      defaulted helper. `native/llvm-14.0-build` adopts it here; the gcc-8.5
+      overlays reuse it in #7324.
+    - **Relocated (#7386):** moved `spksrc.native/archive.mk` →
+      `spksrc.build/archive.mk` — the helper is a shared build step, not native-only
+      (a from-source rustc reuses it in #7353). No behaviour change.
+    - Pull requests: [#7327](https://github.com/SynoCommunity/spksrc/pull/7327),
+      [#7386](https://github.com/SynoCommunity/spksrc/pull/7386)
+
+??? note "July 23rd 2026 — Carry the runtime library the binary asks for, by symbol version (#7322)"
+    - **What:** the strip step copies the runtime libraries DSM does not ship
+      (`libatomic`, `libquadmath`, `libgfortran` -- the `TC_LIBS_DEFAULT` list) from
+      the toolchain. It now selects the copy whose **symbol versions** satisfy the
+      binary (`readelf -V` vs `strings`), instead of the first one a plain
+      `find -name` turns up.
+    - **Why:** a find by name returns every copy in the toolchain at once (the
+      sysroot's, the compiler's `lib64`, a multilib) and handed the first to a
+      `basename` expecting one. Choosing by symbol version is correct with the
+      multilib case today and ready for several gcc versions to coexist under a
+      future overlay.
+    - No package-facing change.
+    - Pull request: [#7322](https://github.com/SynoCommunity/spksrc/pull/7322)
+
+??? note "July 23rd 2026 — Detect Fortran by probing the compiler (#7321)"
+    - **What:** `TC_HAS_FORTRAN` was a static "7.x / SRM 1.3 / 6.2.4-x64 ship
+      gfortran" table; it is now a probe of the actual `gfortran` binary, evaluated
+      (like `TC_HAS_LIBATOMIC`) in the tc_vars sub-make after the toolchain is
+      extracted, so cross packages read the baked result.
+    - **Why:** the table is a proxy for the stock toolchains only -- it cannot see a
+      compiler swapped in underneath, e.g. a gcc overlay that adds gfortran to an
+      arch the table calls Fortran-less. Probing the binary stays correct whatever
+      provides it, and gives the same answer as the table on every stock toolchain
+      today.
+    - No package-facing change.
+    - Pull request: [#7321](https://github.com/SynoCommunity/spksrc/pull/7321)
+
+??? note "July 23rd 2026 — Toolchain ABI and link flags reach every language (#7314)"
+    A toolchain's ABI/arch flags now consistently reach every language and the
+    link, and two link-time libraries stopped being hand-maintained arch lists.
+
+    - **What:** a toolchain declares its ABI once in `TC_EXTRA_BUILD_FLAGS`
+      (`-march`, `-mcpu`, `-mfpu`, `-mfloat-abi`, ...); the framework folds it into
+      each `TC_EXTRA_<LANG>FLAGS` (C / CPP / C++ / Fortran) and into
+      `TC_EXTRA_LDFLAGS`, so every language *and* the gcc link driver build with
+      the same ABI. `-lrt` (glibc &lt; 2.17, `clock_gettime`) and `-latomic`
+      (ARMv5 / PowerPC, no native 64-bit atomics) moved out of about two dozen
+      per-package arch lists into `TC_EXTRA_LDFLAGS`; `-latomic` is kept only when
+      the toolchain's gcc actually ships it, detected with
+      `gcc -print-file-name=libatomic.so`. Both are wrapped in
+      `-Wl,--as-needed ... -Wl,--no-as-needed` so, now that they are declared
+      toolchain-wide, a binary records a `librt` / `libatomic` dependency only when
+      it truly references one. **The wrap was removed in #7433** — see the
+      September 4th 2026 entry: it discarded both libraries instead of pruning
+      them.
+    - **Why:** passing the ABI only through `CFLAGS` silently built C++ / Fortran
+      objects with a different ABI than the C they link against, and the rt/atomic
+      arch lists had to be rechecked by hand each time a toolchain moved.
+      `TC_EXTRA_RUSTFLAGS` is left out on purpose — rustc takes its ABI through
+      `-Ctarget-cpu`, and a crate's C dependencies get it via
+      `CFLAGS_<target> = TC_EXTRA_CFLAGS`.
+    - Documented in
+      [Extra flags a toolchain can declare](../framework/toolchain.md#extra-flags-a-toolchain-can-declare).
+    - Pull request: [#7314](https://github.com/SynoCommunity/spksrc/pull/7314)
+
+??? note "July 23rd 2026 — Declare toolchain capabilities instead of arch lists (#7313)"
+    A package can now say what it *needs* from a toolchain rather than list the
+    architectures where it happens to fail today.
+
+    - **What:** three declarative floors — `MIN_GCC_VERSION`, `MIN_GLIBC_VERSION`
+      and `REQUIRE_64BIT` — checked against the toolchain's own `TC_GCC` /
+      `TC_GLIBC` (and `TC_KERNEL`), now declared in each toolchain Makefile and
+      read statically. An unmet floor makes `pre-check.mk` refuse that
+      architecture with a human-readable reason, and several reasons accumulate
+      (a 32-bit target on an old gcc reports both). About two dozen `cross/`
+      packages and `ffmpeg7/8` dropped their `UNSUPPORTED_ARCHS` arch lists in
+      favour of a floor.
+    - **Why:** a hardcoded arch list says *where* a package fails, not *why*; it
+      must be rechecked by hand every time a toolchain moves and cannot express
+      "any arch whose gcc is older than X". A declared floor can, and stays
+      correct on its own.
+    - **Beyond a DSM floor:** `REQUIRED_MIN_DSM` was frequently used as a *proxy*
+      for "needs a recent enough compiler", then topped up with `UNSUPPORTED_ARCHS`
+      for the architectures a single DSM floor still missed — a DSM version does
+      not map to one gcc across every arch, so an older platform can ship an older
+      gcc on the same DSM. `MIN_GCC_VERSION` states the real requirement and covers
+      all of those cases at once, dynamically. `REQUIRED_MIN_DSM` /
+      `REQUIRED_MAX_DSM` / `REQUIRED_MIN_SRM` and `UNSUPPORTED_ARCHS` remain for
+      genuine OS-version and per-arch constraints that are not a capability floor.
+    - **Also:** `TC_GCC` is read from the toolchain Makefile instead of running
+      `gcc -dumpversion`, so the compiler version is known before anything is
+      extracted.
+    - Documented in
+      [Architecture Support](../developer-guide/packaging/makefile-variables.md#architecture-support).
+    - Pull request: [#7313](https://github.com/SynoCommunity/spksrc/pull/7313)
+
+??? note "July 13th 2026 — Build-variable standardization (3 PRs)"
+    A three-part effort so that every build system (autotools, CMake, Meson)
+    exposes the **same** package-facing variable names. Before it, a Makefile
+    looked different depending on the underlying build tool; after it, the same
+    variable means the same thing everywhere.
+
+    ??? note "`CONFIGURE_ARGS` — unify the configure arguments (#7279)"
+        CMake was the odd one out: it used `CMAKE_ARGS` / `ADDITIONAL_CMAKE_ARGS`
+        while autotools and Meson already passed their options through
+        `CONFIGURE_ARGS`.
+
+        - **What:** renamed `CMAKE_ARGS` → `CONFIGURE_ARGS` and
+          `ADDITIONAL_CMAKE_ARGS` → `ADDITIONAL_CONFIGURE_ARGS` across every cmake
+          package (no alias); `ADDITIONAL_CONFIGURE_ARGS` is now honoured by
+          autotools and Meson too.
+        - **Why:** one variable for "arguments to the configure step" regardless
+          of the build system. `ADDITIONAL_CONFIGURE_ARGS` remains for the rare
+          case where a package reuses `CONFIGURE_ARGS` for its own auxiliary
+          invocations and needs extra args to reach only the framework's call
+          (see `cross/x265`).
+        - Documented in
+          [Build System Selection](../developer-guide/packaging/makefile-variables.md#build-system-selection).
+        - Pull request: [#7279](https://github.com/SynoCommunity/spksrc/pull/7279)
+
+    ??? note "`COMPILE_ARGS` / `INSTALL_ARGS` — unify the compile & install arguments (#7280)"
+        The compile and install steps had an autotools-only slot
+        (`COMPILE_MAKE_OPTIONS` / `INSTALL_MAKE_OPTIONS`) with no CMake/Meson
+        equivalent.
+
+        - **What:** introduced `COMPILE_ARGS` and `INSTALL_ARGS`. On the autotools
+          / plain-make path they *are* the make command (replacing the removed
+          `*_MAKE_OPTIONS`); for CMake and Meson they are appended as-is to
+          `cmake --build` / `cmake --install` and `ninja` / `ninja install`.
+        - **Defaults on the make path:** when unset, `COMPILE_ARGS` defaults to
+          `-j$(NCPUS)` and `INSTALL_ARGS` to `install DESTDIR=… prefix=…`, so a
+          package's own make routines can reference them and inherit sensible
+          behaviour (e.g. `cross/cairo-1.16` gains `-j`; `cross/glibc-*` drop
+          their explicit `-j`).
+        - **Why the scoping matters:** the defaults are gated by `DEFAULT_ENV`
+          (and an `INSTALL_TARGET` python check) so they never leak into
+          CMake/Meson/rust/python builds — the native cmake/meson env files
+          declare `DEFAULT_ENV` for the same reason.
+        - Documented in
+          [Compile and Install Arguments](../developer-guide/packaging/makefile-variables.md#compile-and-install-arguments).
+        - Pull request: [#7280](https://github.com/SynoCommunity/spksrc/pull/7280)
+
+    ??? note "`BUILD_DIR` — unify the build directory (#7282)"
+        CMake, Meson and Ninja each had their own build-directory variable
+        (`CMAKE_BUILD_DIR` / `MESON_BUILD_DIR` / `NINJA_BUILD_DIR`).
+
+        - **What:** unified them on a single `BUILD_DIR`, set per build system by
+          the matching env file, and **extended out-of-tree build support to the
+          autotools / plain-make path**: it builds in-source by default and opts
+          in to an out-of-tree build by setting `BUILD_DIR`.
+        - **Why:** one name for "where the build happens", and a framework
+          mechanism for out-of-tree autotools builds that packages previously
+          hand-rolled — `cross/glibc` dropped its three custom
+          configure/compile/install targets in favour of a one-line `BUILD_DIR`.
+        - Pull request: [#7282](https://github.com/SynoCommunity/spksrc/pull/7282)
+
+??? note "July 13th 2026 — Disable a package with `BROKEN` or `DISABLED` (#7283)"
+    - **What:** a package is skipped when it has a `BROKEN` **or** a `DISABLED`
+      file in its folder — both are honoured by `spksrc.rules/pre-check.mk`
+      (build time) and the CI `prepare.sh` (package selection). Use `DISABLED`
+      when a package is intentionally turned off and `BROKEN` when it is actually
+      failing.
+    - **Why:** the marker file now reads its intent. First use: `spk/ffmpeg{4,5,6}`
+      were disabled — no new release is planned and disabling them keeps their
+      large codec dependency trees out of the build. See the
+      [package lifecycle](../contributing/package-lifecycle.md) guide.
+    - Pull request: [#7283](https://github.com/SynoCommunity/spksrc/pull/7283)
+
+??? note "July 2nd 2026 — Context-aware `make help` (#7250)"
+    Context-aware help at the repo root and inside each package.
+
+    Pull request: [#7250](https://github.com/SynoCommunity/spksrc/pull/7250)
+
+??? note "July 2nd 2026 — Build logs off the repo root (#7256)"
+    Build logs are no longer pinned to the repository root, keeping the tree clean.
+
+    Pull request: [#7256](https://github.com/SynoCommunity/spksrc/pull/7256)
+
+??? note "July 1st – August 24th 2026 — Bounded mirror fallback for downloads (4 PRs)"
+    A download used to be a single request to `PKG_DIST_SITE`: if that host was
+    down, or its TLS certificate had just expired, the build failed.
+
+    - **What (#7254):** the download logic was split into per-method macros
+      (`DOWNLOAD_GIT` / `SVN` / `HG` / `HTTP`, dispatched on
+      `PKG_DOWNLOAD_METHOD`), and a plain download now walks a list of candidate
+      URLs, stopping at the first success. Mirrors of the big source hosts are
+      tried automatically, and `PKG_DIST_MIRRORS` lets a package name its own
+      fallback base URLs. Mirroring applies to `http` only — the VCS methods
+      fetch a revision from one place and tar it themselves.
+    - **Why bounded:** the candidate list is finite (primary URL + family mirrors
+      + `PKG_DIST_MIRRORS`, de-duplicated) and each is retried `DOWNLOAD_TRIES`
+      times, so a download that cannot succeed fails rather than looping.
+    - **Why it is safe:** every candidate is checked against `digests`, so a
+      mirror serving different bytes fails the build instead of poisoning it.
+    - **The families since (#7349, #7384, #7401):** the variables were renamed
+      `<FAMILY>_MIRRORS` → **`MIRROR_<FAMILY>`**, and the table grew to seven:
+
+        ```
+        MIRROR_GNU  MIRROR_SOURCEFORGE  MIRROR_GNOME  MIRROR_KERNEL
+        MIRROR_SAVANNAH (#7349)  MIRROR_GNUPG (#7384)  MIRROR_FREEDESKTOP (#7401)
+        ```
+
+      `MIRROR_FREEDESKTOP` is the one that does not preserve the path: its
+      mirrors flatten the layout, so only the file name is appended to each base
+      and the bases embed `$(PKG_NAME)`. Every base is `?=`, so `local.mk` can
+      override any of them.
+    - **X.org was dropped in #7349**, deliberately: no working mirror was found.
+      Its base pointed at `mirror.csclub.uwaterloo.ca/x.org/releases`, which
+      404s, and it matched only `www.x.org/releases/` while every X.org package
+      in the tree downloads from `www.x.org/archive/individual/...`. A family
+      with no reachable mirror and no matching URL only adds candidates that
+      fail. Those packages have no automatic fallback as a result; `libX11`
+      moved to `xorg.freedesktop.org` and is covered by `MIRROR_FREEDESKTOP`.
+      The durable answer for the rest is the `sources` release, as below.
+    - Documented in
+      [Source downloads and mirrors](../developer-guide/packaging/makefile-variables.md#source-downloads-and-mirrors).
+    - Pull requests: [#7254](https://github.com/SynoCommunity/spksrc/pull/7254),
+      [#7349](https://github.com/SynoCommunity/spksrc/pull/7349),
+      [#7384](https://github.com/SynoCommunity/spksrc/pull/7384),
+      [#7401](https://github.com/SynoCommunity/spksrc/pull/7401)
+
+??? note "January 29th – July 1st 2026 — Reorganize `mk/` into functional submodules (8 PRs)"
+    `mk/` was a flat pile of `spksrc.*.mk` files. Over six months it was
+    reorganized so related logic lives together in concern-based submodules,
+    while the entry-point files a package Makefile actually `include`s
+    (`spksrc.cross-cc.mk`, `spksrc.spk.mk`, `spksrc.cross-cmake.mk`, …) stay at
+    the root. This was not one big-bang move but a sequence of PRs, each carving
+    out one concern at a time.
+
+    The layout today, with the directories added since (see
+    [Makefile System](makefile-system.md#include-hierarchy) for every file):
+
+    ```text
+    mk/
+    ├── spksrc.cross-cc.mk          ┐  entry points a Makefile includes
+    ├── spksrc.cross-cmake.mk       │  stay at the root (unchanged include paths)
+    ├── spksrc.spk.mk               ┘
+    ├── spksrc.common/           archs, directories, help, logs, stage0, dotnet,
+    │                            tc-capability; macros/ and overlay/ (decisions) by theme
+    ├── spksrc.build/            per-step recipes: configure, compile, install, patch, …
+    ├── spksrc.cross/            cross-build env per build system: cmake, meson, rust, go, dotnet
+    ├── spksrc.native/           native-build env per build system
+    ├── spksrc.native-toolchain/ overlay producers: binutils, gcc, rustc (#7707)
+    ├── spksrc.overlay/          overlay consumers: binutils, gcc, rust (#7701)
+    ├── spksrc.rules/            depend, dependency, dependency-tree, pre-check, digests,
+    │                            status, supported, check, overlay, tests
+    ├── spksrc.spk/              spk assembly: copy, icon, strip, publish
+    ├── spksrc.spk-meta/         meta initiators: ffmpeg, python, videodriver
+    ├── spksrc.service/          DSM service scripts and installers
+    ├── spksrc.wheel/            python wheel build/install
+    ├── spksrc.toolchain/        toolchain fetch, tc_vars generation, overlay/ use
+    ├── spksrc.toolkit/          build-host toolkit (mirrors toolchain)
+    └── spksrc.kernel/           kernel-module build support, for kernel/ and driver/
+    ```
+
+    ??? note "`spksrc.common/` — split `common.mk` (#6906)"
+        Split the overloaded `spksrc.common.mk` into `spksrc.common/`
+        (`archs.mk`, `macros.mk`, `logs.mk`, …) and had every `cross/` and `spk/`
+        Makefile include `spksrc.common.mk` before any `version_*` macro call.
+
+        Pull request: [#6906](https://github.com/SynoCommunity/spksrc/pull/6906)
+
+    ??? note "`spksrc.toolchain/` (#6914)"
+        Moved `spksrc.tc.mk` and the toolchain logic into `spksrc.toolchain/`
+        (`tc-base.mk`, `tc-versions.mk`, `tc_vars.mk`, …).
+
+        Pull request: [#6914](https://github.com/SynoCommunity/spksrc/pull/6914)
+
+    ??? note "`spksrc.toolkit/` (#6973)"
+        Reorganized the build-host toolkit the same way, mirroring the toolchain
+        layout (`tk-base.mk`, `tk-versions.mk`, `tk_vars.mk`, …).
+
+        Pull request: [#6973](https://github.com/SynoCommunity/spksrc/pull/6973)
+
+    ??? note "`spksrc.kernel/` (#6994)"
+        Split kernel-module support into `spksrc.kernel/` (`base.mk`,
+        `headers.mk`, `module.mk`, `versions.mk`, …).
+
+        Pull request: [#6994](https://github.com/SynoCommunity/spksrc/pull/6994)
+
+    ??? note "`spksrc.spk-meta/` — meta initiators (#7008)"
+        Split the ffmpeg / python / videodriver meta initiators out of the
+        monolithic mk files into `spksrc.spk/` and `spksrc.spk-meta/`, and renamed
+        the meta-spk initiator to `spksrc.spk-meta.mk`.
+
+        Pull request: [#7008](https://github.com/SynoCommunity/spksrc/pull/7008)
+
+    ??? note "The bulk: build / cross / native / rules / service / wheel (#7237)"
+        The largest move: carved the remaining per-step recipes, per-build-system
+        env files, rules, service scripts and wheel logic into
+        `spksrc.build/`, `spksrc.cross/`, `spksrc.native/`, `spksrc.rules/`,
+        `spksrc.service/` and `spksrc.wheel/`.
+
+        Pull request: [#7237](https://github.com/SynoCommunity/spksrc/pull/7237)
+
+    ??? note "`spksrc.cross-install.mk` rename (#7243)"
+        Renamed `install-resources.mk` and slimmed the install wrappers so the
+        cross/native install paths share one implementation.
+
+        Pull request: [#7243](https://github.com/SynoCommunity/spksrc/pull/7243)
+
+    ??? note "`spksrc.cross-virtual.mk` rename (#7251)"
+        Renamed `spksrc.main-depends.mk` to describe what it is — the entry point
+        for virtual (dependency-only) packages.
+
+        Pull request: [#7251](https://github.com/SynoCommunity/spksrc/pull/7251)
+
+??? note "June 28th 2026 — Boxed `*.mk` file headers (#7242)"
+    Standardized every `*.mk` header to one boxed format, so each file states its
+    purpose, inputs and outputs consistently.
+
+    Pull request: [#7242](https://github.com/SynoCommunity/spksrc/pull/7242)
+
+??? note "June 22nd–25th 2026 — Meta cross-dependency environment (4 PRs)"
+    How a "meta" package (ffmpeg, videodriver, python) exposes its
+    cross-dependencies to consumers.
+
+    ??? note "Introduce the meta cross-dependency environment (#7222)"
+        Introduced `META_PKGCONFIG_DIRS` + `tc_vars.meta.mk`.
+
+        Pull request: [#7222](https://github.com/SynoCommunity/spksrc/pull/7222)
+
+    ??? note "Resolve CMake meta deps via the toolchain file (#7223)"
+        Resolve `OPENSSL_ROOT_DIR` + `CMAKE_FIND_ROOT_PATH` through the generated
+        toolchain file instead of ad-hoc detection.
+
+        Pull request: [#7223](https://github.com/SynoCommunity/spksrc/pull/7223)
+
+    ??? note "Ordered `PKG_CONFIG_LIBDIR` shared across channels (#7228)"
+        A single ordered pkg-config search path shared across all channels, so
+        local staging reliably wins over meta directories.
+
+        Pull request: [#7228](https://github.com/SynoCommunity/spksrc/pull/7228)
+
+    ??? note "Meta mechanism rework (#7229)"
+        Auto-build the meta source, drop the denylist, consolidate OpenSSL.
+
+        Pull request: [#7229](https://github.com/SynoCommunity/spksrc/pull/7229)
+
+??? note "June 10th 2026 — Toolchain cache poisoning fix (#7196)"
+    A stale toolchain cache was silently dropping `TC_GCC`-gated `DEPENDS`.
+
+    Pull request: [#7196](https://github.com/SynoCommunity/spksrc/pull/7196)
+
+??? note "June 10th 2026 — Stage-0 toolchain bootstrap (#7184)"
+    Bootstrap the toolchain before deriving `TC_GCC`, so version-gated
+    dependencies (`version_ge TC_GCC …`) parse correctly on a cold tree. This
+    refines the stage0 minimal environment introduced in March (see below).
+
+    Pull request: [#7184](https://github.com/SynoCommunity/spksrc/pull/7184)
+
+??? note "January – May 2026 — Faster, parallel dependency resolution (5 PRs)"
+    Dependency resolution used to run through a shell script
+    (`mk/dependency-list.sh`) walked serially. It is now a pure-Makefile
+    implementation (`spksrc.rules/dependency-tree.mk`) that the framework can
+    walk in parallel.
+
+    ??? note "Faster `dependency-flat` (#6894)"
+        Rewrote the flat dependency walk and fixed a basename collision in the
+        parallel walk (packages of the same name in different directories, e.g.
+        `native/erlang` and `cross/erlang`, shared a done-file).
+
+        Pull request: [#6894](https://github.com/SynoCommunity/spksrc/pull/6894)
+
+    ??? note "Pure-Makefile dependency-tree (#6952)"
+        Replaced the legacy `dependency-list.sh` with
+        `spksrc.dependency-tree.mk`, consolidating resolution into the framework
+        and enabling parallel builds — up to ~2.9× faster.
+
+        Pull request: [#6952](https://github.com/SynoCommunity/spksrc/pull/6952)
+
+    ??? note "`EXCLUDE_DEPENDS` and `DEPENDS_TYPE` (#7028)"
+        Added a way to prune a subtree from the traversal (`EXCLUDE_DEPENDS`) and
+        to filter the output by relation type (`DEPENDS_TYPE`).
+
+        Pull request: [#7028](https://github.com/SynoCommunity/spksrc/pull/7028)
+
+    ??? note "Query a specific `ARCH` / `TCVERSION` (#7121, #7124)"
+        Let the dependency tree be computed for a specific arch and DSM version,
+        so version-gated dependencies resolve as they would in a real build.
+
+        Pull requests: [#7121](https://github.com/SynoCommunity/spksrc/pull/7121),
+        [#7124](https://github.com/SynoCommunity/spksrc/pull/7124)
+
+??? note "April 19th – 22nd 2026 — Deduplicate applied patches (2 PRs)"
+    - **What:** a patch listed both as an `arch` and as a `group` (armv7, x64
+      could be both) was applied twice. `spksrc.build/patch.mk` now guarantees
+      each patch appears once in `PATCHES`, with md5sum-based deduplication.
+    - **Why:** applying a patch twice either fails or double-applies a hunk; the
+      build should be independent of how a patch happened to be listed.
+    - Pull requests: [#7098](https://github.com/SynoCommunity/spksrc/pull/7098),
+      [#7104](https://github.com/SynoCommunity/spksrc/pull/7104)
+
+??? note "April 5th – 7th 2026 — Standardize meta package variable names (4 PRs)"
+    The ffmpeg, videodriver and python "meta" packages each exposed their install
+    prefix under a differently-shaped variable name.
+
+    - **What:** standardized the `*_INSTALL_PREFIX` variables —
+      `VIDEODRV_*INSTALL_PREFIX` (#7043), `FFMPEG_*INSTALL_PREFIX` (#7044),
+      `PYTHON_*INSTALL_PREFIX` (#7045) — and the surrounding python / openssl /
+      ffmpeg / videodriver variable names (#7041).
+    - **Why:** a consumer of any meta package now finds the same variable shape
+      regardless of which one it depends on. This is the naming half of the meta
+      cross-dependency environment (the June 22nd–25th entry above).
+    - Pull requests: [#7041](https://github.com/SynoCommunity/spksrc/pull/7041),
+      [#7043](https://github.com/SynoCommunity/spksrc/pull/7043),
+      [#7044](https://github.com/SynoCommunity/spksrc/pull/7044),
+      [#7045](https://github.com/SynoCommunity/spksrc/pull/7045)
+
+??? note "March – April 2026 — stage0 minimal environment (3 PRs)"
+    - **What:** `spksrc.common/stage0.mk` loads a minimal environment early —
+      just enough for the `version_*` macros and `TC_GCC` — so a package Makefile
+      can call `version_*` before the full toolchain environment exists (#7031),
+      with a more robust `BASEDIR` detection (#7032) and a follow-up fix for a
+      subtle ordering bug (#7078).
+    - **Why:** it keeps the full toolchain environment from leaking into the
+      dependency traversal, and lets version-gated `DEPENDS` parse on a cold
+      tree. The stage-0 toolchain bootstrap (#7184, above) builds on this.
+    - Pull requests: [#7031](https://github.com/SynoCommunity/spksrc/pull/7031),
+      [#7032](https://github.com/SynoCommunity/spksrc/pull/7032),
+      [#7078](https://github.com/SynoCommunity/spksrc/pull/7078)
+
+??? note "February 7th 2026 — Multi-arch download orchestration (#6947)"
+    Auto-orchestrate the download, checksum and digest steps across all of a
+    package's distribution architectures, instead of handling one arch at a time.
+
+    Pull request: [#6947](https://github.com/SynoCommunity/spksrc/pull/6947)

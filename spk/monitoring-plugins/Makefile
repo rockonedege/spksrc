@@ -1,16 +1,77 @@
 SPK_NAME = monitoring-plugins
-SPK_VERS = 2.2
-SPK_REV = 1
-SPK_ICON = src/img.png
+SPK_VERS = 3.0.2
+SPK_REV = 4
+SPK_ICON = src/monitoring-plugins.png
 
-DEPENDS = cross/$(SPK_NAME)
+DEPENDS = cross/monitoring-plugins
+
+SPK_DEPENDS = Perl
+
+# v3.0.x uses C11 _Generic which needs GCC >= 4.9
+MIN_GCC_VERSION = 4.9
 
 MAINTAINER = Gagi2k
 DESCRIPTION = Standard plugins for Icinga, Naemon, Nagios, Shinken, Sensu, and other monitoring applications.
+CHANGELOG = "1. Update monitoring-plugins to v3.0.2"
 STARTABLE = no
 DISPLAY_NAME = Monitoring Plugins
 
 HOMEPAGE = https://www.monitoring-plugins.org
 LICENSE  = GPLv3
+
+SPK_COMMANDS  = bin/check_apt
+SPK_COMMANDS += bin/check_breeze
+SPK_COMMANDS += bin/check_by_ssh
+SPK_COMMANDS += bin/check_clamd
+SPK_COMMANDS += bin/check_cluster
+SPK_COMMANDS += bin/check_dhcp
+SPK_COMMANDS += bin/check_disk
+SPK_COMMANDS += bin/check_disk_smb
+SPK_COMMANDS += bin/check_dummy
+SPK_COMMANDS += bin/check_file_age
+SPK_COMMANDS += bin/check_flexlm
+SPK_COMMANDS += bin/check_ftp
+SPK_COMMANDS += bin/check_http
+SPK_COMMANDS += bin/check_icmp
+SPK_COMMANDS += bin/check_ide_smart
+SPK_COMMANDS += bin/check_ifoperstatus
+SPK_COMMANDS += bin/check_ifstatus
+SPK_COMMANDS += bin/check_imap
+SPK_COMMANDS += bin/check_ircd
+SPK_COMMANDS += bin/check_jabber
+SPK_COMMANDS += bin/check_load
+SPK_COMMANDS += bin/check_log
+SPK_COMMANDS += bin/check_mailq
+SPK_COMMANDS += bin/check_mrtg
+SPK_COMMANDS += bin/check_mrtgtraf
+SPK_COMMANDS += bin/check_mssql
+SPK_COMMANDS += bin/check_nagios
+SPK_COMMANDS += bin/check_nntp
+SPK_COMMANDS += bin/check_nntps
+SPK_COMMANDS += bin/check_ntp_peer
+SPK_COMMANDS += bin/check_ntp_time
+SPK_COMMANDS += bin/check_oracle
+SPK_COMMANDS += bin/check_ping
+SPK_COMMANDS += bin/check_pop
+SPK_COMMANDS += bin/check_procs
+SPK_COMMANDS += bin/check_real
+SPK_COMMANDS += bin/check_rpc
+SPK_COMMANDS += bin/check_sensors
+SPK_COMMANDS += bin/check_simap
+SPK_COMMANDS += bin/check_smtp
+SPK_COMMANDS += bin/check_spop
+SPK_COMMANDS += bin/check_ssh
+SPK_COMMANDS += bin/check_ssmtp
+SPK_COMMANDS += bin/check_swap
+SPK_COMMANDS += bin/check_tcp
+SPK_COMMANDS += bin/check_time
+SPK_COMMANDS += bin/check_udp
+SPK_COMMANDS += bin/check_ups
+SPK_COMMANDS += bin/check_uptime
+SPK_COMMANDS += bin/check_users
+SPK_COMMANDS += bin/check_wave
+# must be found in /usr/local/bin too:
+SPK_COMMANDS += bin/utils.sh
+SPK_COMMANDS += bin/utils.pm
 
 include ../../mk/spksrc.spk.mk

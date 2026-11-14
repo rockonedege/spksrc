@@ -1,49 +1,82 @@
 SPK_NAME = synocli-net
-SPK_VERS = 1.4
-SPK_REV = 4
+SPK_VERS = 10.0
+SPK_REV = 23
 SPK_ICON = src/synocli-net.png
 
-DEPENDS = cross/screen cross/tmux cross/nmap cross/sshfs cross/mosh cross/socat
-DEPENDS += cross/rsync cross/autossh
-
-# Requirement for Mosh
-SPK_DEPENDS = "Perl>=5.14"
-
-OPTIONAL_DEPENDS = cross/fritzctl cross/ser2net
+DEPENDS  = cross/tmux
+DEPENDS += cross/links
+DEPENDS += cross/socat
+DEPENDS += cross/rsync
+DEPENDS += cross/autossh
+DEPENDS += cross/arp-scan
+DEPENDS += cross/mtr
+DEPENDS += cross/etherwake
+DEPENDS += cross/inetutils
+DEPENDS += cross/netcat
+DEPENDS += cross/imapfilter
+DEPENDS += cross/sshfs
+DEPENDS += cross/nmap
+DEPENDS += cross/screen
 
 include ../../mk/spksrc.common.mk
 
+# Each taken where its own floors admit the arch; descriptions follow spksrc.spk.mk.
+$(call depend,cross/bind,nop)
+$(call depend,cross/ser2net,nop)
+$(call depend,cross/aria2,nop)
+
 OPTIONAL_DESC =
 
-ifneq ($(findstring $(ARCH),$(PPC_ARCHES)),$(ARCH))
-DEPENDS += cross/fritzctl
-OPTIONAL_DESC := $(OPTIONAL_DESC)", fritzctl"
+MAINTAINER = ymartin59
+DESCRIPTION = "SynoCli Network Tools provides a set of small command-line utilities: screen, tmux, socat, nmap, arp-scan, mtr \(My traceroute\), links, rsync, xxhsum, autossh \(including openssh, sftp and scp\), etherwake, telnet, whois, sshfs, IMAPFilter$(OPTIONAL_DESC)."
+DISPLAY_NAME = SynoCli Network Tools
+STARTABLE = no
+
+DOCS_URL = "\<a target=\"_blank\" href=\"https://docs.synocommunity.com/packages/synocli-net/\"\>SynoCli Network Tools\</a\>"
+
+CHANGELOG  = "1. Fix sshd, which could not start: install the sshd-session and sshd-auth helpers that OpenSSH has required since v9.8. <br/>"
+CHANGELOG += "<br/>For package details and specific licences see $(DOCS_URL)".
+
+
+HOMEPAGE = https://docs.synocommunity.com/packages/synocli-net/
+LICENSE = Each tool is licensed under it\'s respective license.
+
+SPK_COMMANDS  = bin/screen
+SPK_COMMANDS += bin/tmux
+SPK_COMMANDS += bin/nmap bin/nping bin/ncat
+SPK_COMMANDS += bin/arp-scan bin/arp-fingerprint
+SPK_COMMANDS += bin/links
+SPK_COMMANDS += bin/sshfs
+SPK_COMMANDS += bin/socat bin/socat1 bin/procan bin/filan
+SPK_COMMANDS += bin/socat-broker.sh bin/socat-chain.sh bin/socat-mux.sh
+SPK_COMMANDS += bin/rsync
+SPK_COMMANDS += bin/xxh128sum bin/xxh32sum bin/xxh64sum bin/xxhsum
+SPK_COMMANDS += bin/autossh
+SPK_COMMANDS += bin/scp bin/sftp bin/slogin bin/ssh bin/ssh-add bin/ssh-agent bin/ssh-keygen bin/ssh-keyscan
+SPK_USR_LOCAL_LINKS += bin:libexec/sftp-server bin:libexec/ssh-keysign bin:libexec/ssh-pkcs11-helper bin:libexec/ssh-sk-helper
+SPK_USR_LOCAL_LINKS += bin:libexec/sshd-auth bin:libexec/sshd-session
+SPK_COMMANDS += sbin/sshd
+SPK_COMMANDS += sbin/ser2net bin/gensiot bin/gsh bin/gtlssh bin/gtlssh-keygen
+SPK_COMMANDS += sbin/mtr sbin/mtr-packet
+SPK_COMMANDS += bin/etherwake
+SPK_COMMANDS += bin/telnet bin/whois
+SPK_COMMANDS += bin/arpaname bin/delv bin/dig bin/mdig
+SPK_COMMANDS += bin/aria2c
+SPK_COMMANDS += bin/nc bin/netcat
+SPK_COMMANDS += bin/imapfilter
+
+include ../../mk/spksrc.spk.mk
+
+# The optional tools taken above, in the description.
+ifneq ($(filter cross/bind,$(DEPENDS)),)
+# tools of cross/bind (v9.16, v9.18, v9.20)
+OPTIONAL_DESC := $(OPTIONAL_DESC)", arpaname, delv, dig, mdig"
 endif
 
-ifneq ($(findstring $(ARCH), powerpc ppc824x ppc853x ppc854x),$(ARCH))
-DEPENDS += cross/ser2net
+ifneq ($(filter cross/ser2net,$(DEPENDS)),)
 OPTIONAL_DESC := $(OPTIONAL_DESC)", ser2net"
 endif
 
-MAINTAINER = ymartin59
-DESCRIPTION = "SynoCli Network Tools provides a set of small command-line utilities: screen, tmux, mosh, socat, nmap, sshfs, rsync, autossh$(OPTIONAL_DESC). Credits to Sebastian Schmidt \(publicarray\) for icons"
-DISPLAY_NAME = SynoCli Network Tools
-STARTABLE = no
-CHANGELOG = "1. Add autossh"
-
-HOMEPAGE = https://github.com/SynoCommunity/spksrc/wiki/FAQ-SynoCliNet
-LICENSE  = Each tool is licensed under it\'s respective license.
-
-SPK_COMMANDS = bin/screen
-SPK_LINKS = /usr/local/bin/tmux:bin/tmux-utf8
-SPK_COMMANDS += bin/nmap bin/nping bin/ndiff
-SPK_COMMANDS += bin/sshfs
-SPK_COMMANDS += bin/fusermount
-SPK_COMMANDS += bin/mosh bin/mosh-client bin/mosh-server
-SPK_COMMANDS += bin/socat bin/procan bin/filan
-SPK_COMMANDS += bin/fritzctl
-SPK_COMMANDS += bin/rsync
-SPK_COMMANDS += bin/autossh
-SPK_COMMANDS += sbin/ser2net
-
-include ../../mk/spksrc.spk.mk
+ifneq ($(filter cross/aria2,$(DEPENDS)),)
+OPTIONAL_DESC := $(OPTIONAL_DESC)", aria2c"
+endif

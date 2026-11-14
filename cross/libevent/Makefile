@@ -1,18 +1,20 @@
 PKG_NAME = libevent
-PKG_VERS_MAJOR = 2.0
-PKG_VERS_MINOR = 22-stable
-PKG_VERS = $(PKG_VERS_MAJOR).$(PKG_VERS_MINOR)
+PKG_VERS = 2.1.13-stable
 PKG_EXT = tar.gz
 PKG_DIST_NAME = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
-PKG_DIST_SITE = https://sourceforge.net/projects/levent/files/release-$(PKG_VERS_MAJOR).$(PKG_VERS_MINOR)
-PKG_DIR = $(PKG_NAME)-$(PKG_VERS_MAJOR).$(PKG_VERS_MINOR)
+PKG_DIST_SITE = https://github.com/libevent/libevent/releases/download/release-$(PKG_VERS)
+PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
 
-DEPENDS = cross/openssl
+DEPENDS = cross/openssl3
 
-HOMEPAGE = http://libevent.org
-COMMENT  = An event notification library
-LICENSE  = http://libevent.org/LICENSE.txt
+HOMEPAGE = https://libevent.org
+COMMENT  = Event notification library.
+LICENSE  = 3-clause BSD
 
-GNU_CONFIGURE = 1
+CONFIGURE_ARGS += -DEVENT__DISABLE_DEBUG_MODE=ON
+CONFIGURE_ARGS += -DEVENT__DISABLE_BENCHMARK=ON
+CONFIGURE_ARGS += -DEVENT__DISABLE_TESTS=ON
+CONFIGURE_ARGS += -DEVENT__DISABLE_REGRESS=ON
+CONFIGURE_ARGS += -DEVENT__DISABLE_SAMPLES=ON
 
-include ../../mk/spksrc.cross-cc.mk
+include ../../mk/spksrc.cross-cmake.mk

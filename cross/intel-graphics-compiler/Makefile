@@ -1,0 +1,85 @@
+PKG_NAME = intel-graphics-compiler
+# Last supported version to match intel-compute-runtim 24.35 API
+PKG_VERS = 1.0.17791.18
+PKG_EXT = tar.gz
+PKG_DIST_NAME = igc-$(PKG_VERS).$(PKG_EXT)
+PKG_DIST_SITE = https://github.com/intel/intel-graphics-compiler/archive
+PKG_DIR = $(PKG_NAME)-igc-$(PKG_VERS)
+
+HOMEPAGE = https://github.com/oneapi-src/level-zero
+COMMENT  = This project is part of the larger oneAPI project and contains copies of the Level Zero Specification API C/C++ header files, Level Zero Loader, Level Zero Validation Layer and Level Zero Tracing Layer
+LICENSE  = MIT
+
+# Needs gcc >= 7.5: needs C++17, i.e. gcc 7 or newer.
+MIN_GCC_VERSION = 7.5
+UNSUPPORTED_ARCHS = $(ARM_ARCHS) $(PPC_ARCHS) $(i686_ARCHS)
+
+# -----------------------------------------------------------------------------
+# Dependencies
+# -----------------------------------------------------------------------------
+DEPENDS += native/llvm-14.0
+DEPENDS += cross/intel-opencl-clang-140
+DEPENDS += cross/intel-vc-intrinsics
+DEPENDS += cross/Khronos-SPIRV-Tools
+
+# -----------------------------------------------------------------------------
+# Directories for NATIVE LLVM
+# -----------------------------------------------------------------------------
+LLVM_BIN_DIR = $(abspath $(PWD)/../../native/llvm-14.0/work-native/install/usr/local/bin)
+LLVM_LIB_DIR = $(abspath $(PWD)/../../native/llvm-14.0/work-native/install/usr/local/lib)
+
+# -----------------------------------------------------------------------------
+# Post-extract: create symlink to igc
+# -----------------------------------------------------------------------------
+POST_EXTRACT_TARGET = igc_post_extract_target
+igc_post_extract_target:
+	@cd $(WORK_DIR) && ln -sf $(PKG_DIR) $(PKG_NAME)
+	@cd $(WORK_DIR) && ln -sf $(PKG_NAME) igc
+
+# -----------------------------------------------------------------------------
+# CMake arguments
+# -----------------------------------------------------------------------------
+# [llvm]
+CONFIGURE_ARGS += -DIGC_OPTION__LLVM_MODE=Prebuilds
+CONFIGURE_ARGS += -DLLVM_DIR=$(STAGING_INSTALL_PREFIX)/lib/cmake/llvm
+
+# [Khronos-SPIRV-Headers]
+CONFIGURE_ARGS += -DIGC_BUILD__SPIRV_ENABLED=ON
+CONFIGURE_ARGS += -DIGC_OPTION__USE_PREINSTALLED_SPIRV_HEADERS='ON'
+
+# [Khronos-SPIRV-Tools]
+CONFIGURE_ARGS += -DIGC_OPTION__SPIRV_TOOLS_MODE='Prebuilds'
+
+# [vc-intrinsics]
+CONFIGURE_ARGS += -DIGC_BUILD__VC_ENABLED=ON
+CONFIGURE_ARGS += -DIGC_OPTION__VC_INTRINSICS_MODE='Prebuilds'
+
+# -----------------------------------------------------------------------------
+# Access to native/llvm-14.0 spcific binaries
+# -----------------------------------------------------------------------------
+CONFIGURE_ARGS += -DCLANG_EXE=$(LLVM_BIN_DIR)/clang
+CONFIGURE_ARGS += -DLLVM_AS_EXE=$(LLVM_BIN_DIR)/llvm-as
+CONFIGURE_ARGS += -DLLVM_LINK_EXE=$(LLVM_BIN_DIR)/llvm-link
+CONFIGURE_ARGS += -DLLVM_OPT_EXE=$(LLVM_BIN_DIR)/opt
+
+# For native build-time tools to link against LLVM libraries
+# 'CMCLTranslatorTool', 'elf_packager', 'vcb', 'libBiFManager.so', etc.
+CONFIGURE_ARGS += -DCMAKE_BUILD_RPATH="$(LLVM_LIB_DIR)"
+
+# -----------------------------------------------------------------------------
+# Fix warnings-as-errors for stricter compilers (DSM >= 7.2 with GCC 12+)
+# -----------------------------------------------------------------------------
+include ../../mk/spksrc.common.mk
+ifeq ($(call version_ge, $(TC_GCC), 12),1)
+ADDITIONAL_CXXFLAGS += -Wno-error=missing-template-keyword
+ADDITIONAL_CXXFLAGS += -Wno-error=uninitialized
+endif
+
+# -----------------------------------------------------------------------------
+# Include the common cross-cmake rules
+# -----------------------------------------------------------------------------
+include ../../mk/spksrc.cross-cmake.mk
+
+# Requires access to:
+#   Build time (IGC/Release/CMCLTranslatorTool): 'CMCLTranslatorTool', 'elf_packager', 'vcb'
+ENV += PATH=$(BUILD_DIR)/IGC/$(CMAKE_BUILD_TYPE):$$PATH

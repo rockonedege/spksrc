@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 
 """
 Copyright (c) 2018 BingJing Chang
@@ -27,11 +27,10 @@ import sys
 import time
 import logging
 import subprocess
-from lockfile import locked
 from logging.handlers import RotatingFileHandler
 
-INSTALL_DIR = '/usr/local/itools'
-VOLUME_DIR = os.path.join(INSTALL_DIR, 'volume')
+INSTALL_DIR = '/var/packages/itools'
+VOLUME_DIR = os.path.join(INSTALL_DIR, 'target/volume')
 LOGFILE = os.path.join(INSTALL_DIR, 'var/access.log')
 LOCKFILE = os.path.join(INSTALL_DIR, 'var/access.lock')
 
@@ -53,7 +52,7 @@ def run(cmd):
         logger.info('stderr: %s' % err)
         return p.returncode
     except Exception as e:
-        logger.error('exception: %s' % e.message)
+        logger.error('exception: %s' % str(e))
     return -1
 
 

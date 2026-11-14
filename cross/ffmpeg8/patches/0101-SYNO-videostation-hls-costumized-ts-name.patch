@@ -1,0 +1,28 @@
+--- libavformat/segment.c.orig
++++ libavformat/segment.c
+@@ -236,9 +236,15 @@ static int set_segment_filename(AVFormat
+ 
+     if ((ret = av_reallocp(&seg->cur_entry.filename, size)) < 0)
+         return ret;
++#ifdef SYNO_VIDEOSTATION_HLS_COSTUMIZED_TS_NAME
++    snprintf(seg->cur_entry.filename, size, "%s%03d",
++             seg->entry_prefix ? seg->entry_prefix : "",
++             seg->segment_idx);
++#else
+     snprintf(seg->cur_entry.filename, size, "%s%s",
+              seg->entry_prefix ? seg->entry_prefix : "",
+              av_basename(oc->url));
++#endif
+ 
+     return 0;
+ }
+--- synoconfig.h.orig
++++ synoconfig.h
+@@ -10,3 +10,7 @@
+ #if defined(SYNO_VIDEOSTATION)
+ #define SYNO_VIDEOSTATION_HLS_SEEK_TIME
+ #endif
++
++#if defined(SYNO_VIDEOSTATION)
++#define SYNO_VIDEOSTATION_HLS_COSTUMIZED_TS_NAME
++#endif

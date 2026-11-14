@@ -1,88 +1,93 @@
 SPK_NAME = tvheadend
 SPK_SHORT_VERS = 4.3
-SPK_GIT_HASH = ce09077
-SPK_GIT_DATE = 20200713
-SPK_VERS = $(SPK_SHORT_VERS).$(SPK_GIT_DATE)~$(SPK_GIT_HASH)
+SPK_GIT_HASH = 51ec612f
+SPK_GIT_DATE = 20261022
+SPK_VERS = $(SPK_SHORT_VERS).$(SPK_GIT_DATE)
 TVH_VERS = $(SPK_SHORT_VERS)~$(SPK_GIT_HASH)
-SPK_REV = 24
+SPK_REV = 51
 SPK_ICON = src/tvheadend.png
 DSM_UI_DIR = app
+
+# Include common.mk first to get ARCH definitions
+include ../../mk/spksrc.common.mk
+
+# ffmpeg8 needs gcc >= 4.9, ffmpeg4 declares none
+ifeq ($(call version_lt,$(TC_GCC),4.9),1)
+FFMPEG_PACKAGE = ffmpeg4
+else
+FFMPEG_PACKAGE = ffmpeg8
+endif
+
+# python314 needs gcc >= 4.8, python311 declares none
+ifeq ($(call version_lt,$(TC_GCC),4.8),1)
+PYTHON_PACKAGE = python311
+else
+PYTHON_PACKAGE = python314
+endif
+
+#GCC_DEBUG_INFO := 1
+
+MAINTAINER = th0ma7
+DESCRIPTION = Tvheadend is a TV streaming server and recorder for Linux, FreeBSD and Android supporting DVB-S, DVB-S2, DVB-C, DVB-T, ATSC, ISDB-T, IPTV, SAT IP and HDHomeRun as input sources. Tvheadend offers HTTP, HTSP and SAT IP streaming.
+DESCRIPTION_FRE = Tvheadend est un serveur de streaming et enregistreur TV pour Linux, FreeBSD et Android prenant en charge DVB-S, DVB-S2, DVB-C, DVB-T, ATSC, ISDB-T, IPTV, SAT IP et HDHomeRun comme sources d\'entrée. Tvheadend offre le streaming HTTP, HTSP et SAT IP.
+DISPLAY_NAME = Tvheadend
+STARTABLE = yes
+CHANGELOG  = "1. Update to latest git version 51ec612f of October 22nd 2026<br/>"
+CHANGELOG += "2. Experimental migration to ffmpeg 8.1 with hardware transcoding \(TVH-\#2117\)<br/>"
+CHANGELOG += "3. Experimental shared channel cache: record from cache, HTSP timeshift and keep tuned channels \(TVH-\#2249\)<br/>"
+CHANGELOG += "4. Add tv_postremove_cleanup.sh post-remove command to delete comskip and scene marker files<br/>"
+CHANGELOG += "5. Intel Quick Sync Video (QSV) with MediaSDK or oneVPL, on DSM 6 too<br/>"
+LICENSE = GPL v3
+
+CONF_DIR = src/conf/
+
+# 'auto' reserved value grabs SPK_NAME
+SERVICE_USER = auto
+# Debug builds (GCC_DEBUG_INFO=1) ship a start-up script with an optional gdb
+# crash-backtrace mode (toggle at runtime: touch ${SYNOPKG_PKGVAR}/gdb-debug.flag);
+# release builds get the plain start-up script.
+ifeq ($(strip $(GCC_DEBUG_INFO)),1)
+SERVICE_SETUP = src/service-setup-dbg.sh
+else
+SERVICE_SETUP = src/service-setup.sh
+endif
+
+# Service configuration
+SERVICE_PORT = 9981
+SERVICE_PORT_TITLE = Tvheadend (HTTP)
+
+# Admin link
+ADMIN_PORT = ${SERVICE_PORT}
+
+# PPC archs except qoriq are not supported
+#    https://tvheadend.org/issues/5060
+# ffmpeg8 needs C11 -- gcc 4.9 or newer
+
+DEPENDS  = cross/tvheadend
+DEPENDS += cross/dtv-scan-tables
+DEPENDS += cross/docker-tvheadend
+
+WHEELS += src/requirements-pure.txt
 
 # Export version to the build where version
 # script gets patched accordingly by:
 # 000-fix-version.patch from cross/tvheadend
 export TVH_VERS
 
-DEPENDS = cross/busybox cross/$(SPK_NAME)
+POST_SERVICE_TARGET = tvh_post_service
+POST_STRIP_TARGET = tvh_extra_install
 
-MAINTAINER = th0ma7
-DESCRIPTION = Tvheadend is a TV streaming server and recorder for Linux, FreeBSD and Android supporting DVB-S, DVB-S2, DVB-C, DVB-T, ATSC, ISDB-T, IPTV, SAT IP and HDHomeRun as input sources. Tvheadend offers HTTP, HTSP and SAT IP streaming.
-RELOAD_UI = yes
-DISPLAY_NAME = Tvheadend
-STARTABLE = yes
-CHANGELOG = "1. Update to latest git version ce09077 as of July 13th 2020<br/>2. Enable Intel VAAPI on Intel platforms<br/>3. Disable bintray cache<br/>4. Enable tracing<br/>5. Enable pngquant<br/>6. Enable libtheora<br/>7. Enable fdk-acc<br/>8. Enable re-using FFMPEG media and vaapi shared librairies<br/>9. Update to ffmpeg 4.2.4"
-HOMEPAGE = https://tvheadend.org/
-LICENSE = GPL v3
+include ../../mk/spksrc.spk-meta.mk
 
-# PPC_ARCHES except qoriq are not supported
-# https://tvheadend.org/issues/5060
-UNSUPPORTED_ARCHS = powerpc ppc824x ppc853x ppc854x
+# Post-remove command deleting the comskip and scene marker files left next
+# to a removed recording
+.PHONY: tvh_extra_install
+tvh_extra_install:
+	install -m 755 -d $(STAGING_DIR)/bin
+	install -m 755 src/tv_postremove_cleanup.sh $(STAGING_DIR)/bin/tv_postremove_cleanup.sh
 
-WIZARDS_DIR = src/wizard/
-CONF_DIR = src/conf/
-
-# 'auto' reserved value grabs SPK_NAME
-SERVICE_USER = auto
-SERVICE_SETUP = src/service-setup.sh
-
-# Service configuration
-SERVICE_PORT = 9981
-SERVICE_PORT_TITLE = Tvheadend(HTTP)
-
-# Admin link
-ADMIN_PORT = ${SERVICE_PORT}
-
-POST_STRIP_TARGET = tvheadend_extra_install
-
-BUSYBOX_CONFIG = usrmng
-ENV += BUSYBOX_CONFIG="$(BUSYBOX_CONFIG)"
-
-include ../../mk/spksrc.common.mk
-
-# Reuse ffmpeg libraries
-# Requires to invoke: make [package|publish] ARCH= TCVERSION=
-export FFMPEG_DIR = $(shell pwd)/../ffmpeg/work-$(ARCH)-$(TCVERSION)/install/var/packages/ffmpeg/target
-
-ifneq ($(wildcard $(FFMPEG_DIR)),)
-PRE_DEPEND_TARGET = tvheadend_pre_depend
-SPK_DEPENDS = "ffmpeg>4.1"
-endif
-
-include ../../mk/spksrc.spk.mk
-
-.PHONY: tvheadend_pre_depend tvheadend_extra_install
-
-# Use FFMPEG package shared libraries
-FFMPEG_LIBS = libavfilter.pc libpostproc.pc libswresample.pc libavresample.pc libswscale.pc libavutil.pc libavformat.pc libavcodec.pc
-
-# Use other media libraries through FFMPEG package shared libraries
-MEDIA_LIBS = fdk-aac.pc numa.pc ogg.pc opus.pc theoradec.pc theoraenc.pc theora.pc vorbisenc.pc vorbisfile.pc vorbis.pc vpx.pc x264.pc x265.pc
-
-# Add Intel VAAPI libraries on Intel platforms
-ifeq ($(findstring $(ARCH), $(x64_ARCHES)),$(ARCH))
-VAAPI_LIBS = libdrm.pc libdrm_intel.pc libkms.pc libva.pc libva-drm.pc pciaccess.pc
-endif
-
-tvheadend_pre_depend:
-	mkdir -p $(STAGING_INSTALL_PREFIX)/lib/pkgconfig/
-	$(foreach lib,$(FFMPEG_LIBS),ln -sfT $(FFMPEG_DIR)/lib/pkgconfig/$(lib) $(STAGING_INSTALL_PREFIX)/lib/pkgconfig/$(lib) ;)
-	$(foreach lib,$(MEDIA_LIBS),ln -sfT $(FFMPEG_DIR)/lib/pkgconfig/$(lib) $(STAGING_INSTALL_PREFIX)/lib/pkgconfig/$(lib) ;)
-	$(foreach lib,$(VAAPI_LIBS),ln -sfT $(FFMPEG_DIR)/lib/pkgconfig/$(lib) $(STAGING_INSTALL_PREFIX)/lib/pkgconfig/$(lib) ;)
-
-tvheadend_extra_install:
-	install -m 755 -d $(STAGING_DIR)/var
-	install -m 755 -d $(STAGING_DIR)/var/accesscontrol
-	install -m 755 -d $(STAGING_DIR)/var/passwd
-	# The following filenames stem from an arbitrary (valid) combination created by TVH
-	install -m 644 src/accesscontrol.json $(STAGING_DIR)/var/accesscontrol/d80ccc09630261ffdcae1497a690acc8
-	install -m 644 src/passwd.json $(STAGING_DIR)/var/passwd/a927e30a755504f9784f23a4efac5109
+.PHONY: tvh_post_service
+tvh_post_service:
+	sed -i -e 's/_PYTHON_PACKAGE_/$(PYTHON_PACKAGE)/g' \
+	       -e 's/_FFMPEG_PACKAGE_/$(FFMPEG_PACKAGE)/g' \
+	           $(WORK_DIR)/scripts/service-setup

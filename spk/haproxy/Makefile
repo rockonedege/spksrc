@@ -1,53 +1,42 @@
 SPK_NAME = haproxy
-SPK_VERS = 1.5.14
-SPK_REV = 20
+SPK_VERS = 3.4.7
+SPK_REV = 26
 SPK_ICON = src/haproxy.png
-DSM_UI_DIR = app
-DSM_APP_NAME = SYNOCOMMUNITY.HAProxy.AppInstance
 
-DEPENDS = cross/$(SPK_NAME)
-WHEELS = src/requirements.txt
-SPK_DEPENDS = "python>2.7.3-3"
+DEPENDS = cross/haproxy
+
+PYTHON_PACKAGE = python314
+WHEELS = src/requirements-crossenv.txt src/requirements-pure.txt
 
 MAINTAINER = Diaoul
 DESCRIPTION = HAProxy is a free, very fast and reliable solution offering high availability, load balancing, and proxying for TCP and HTTP-based applications.
 DESCRIPTION_FRE = HAProxy est un produit libre, performant et fiable qui permet la haute disponibilité, la répartition de charge et le proxy de services TCP ou HTTP.
-ADMIN_PORT = 8280
-RELOAD_UI = yes
 DISPLAY_NAME = HAProxy
-CHANGELOG = "1. Fix DSM 6 compatibility"
+CHANGELOG = "Update to HAProxy 3.4.7"
 
-HOMEPAGE   = http://haproxy.1wt.eu/
-LICENSE    = GNU GPL 2
-HELPURL    = http://synocommunity.com/help/haproxy
+HOMEPAGE   = https://haproxy.1wt.eu/
+LICENSE    = GPLv2
 
-INSTALLER_SCRIPT = src/installer.sh
-SSS_SCRIPT       = src/dsm-control.sh
-FWPORTS          = src/${SPK_NAME}.sc
-CONF_DIR         = src/conf/
-WIZARDS_DIR      = src/wizard/
+STARTABLE = yes
+SERVICE_USER = auto
+SERVICE_SETUP = src/service-setup.sh
+SERVICE_PORT = 8281
+SERVICE_PORT_PROTOCOL = https
+SERVICE_PORT_TITLE = HAProxy Dashboard
 
-INSTALL_PREFIX = /usr/local/$(SPK_NAME)
+ADMIN_PORT = $(SERVICE_PORT)
+ADMIN_PROTOCOL = https
+
+FWPORTS = src/${SPK_NAME}.sc
+WIZARDS_DIR = src/wizard/
 
 POST_STRIP_TARGET = haproxy_extra_install
 
-include ../../mk/spksrc.spk.mk
+include ../../mk/spksrc.spk-meta.mk
 
 .PHONY: haproxy_extra_install
 haproxy_extra_install:
-	install -m 755 -d $(STAGING_DIR)/var
-	install -m 755 -d $(STAGING_DIR)/var/crt
-	install -m 755 -d $(STAGING_DIR)/app
-	install -m 644 src/haproxy.cfg $(STAGING_DIR)/var/haproxy.cfg.tpl
-	install -m 644 src/app/config $(STAGING_DIR)/app/config
-	install -m 644 src/app/style.css $(STAGING_DIR)/app/style.css
-	install -m 644 src/app/haproxy.js $(STAGING_DIR)/app/haproxy.js
-	install -m 755 src/app/setup.py $(STAGING_DIR)/app/setup.py
-	install -m 755 src/app/haproxy.cgi.py $(STAGING_DIR)/app/haproxy.cgi
-	install -m 755 -d $(STAGING_DIR)/app/application
-	install -m 644 src/app/application/* $(STAGING_DIR)/app/application/
-	install -m 755 -d $(STAGING_DIR)/app/texts
-	for language in enu fre; do \
-		install -m 755 -d $(STAGING_DIR)/app/texts/$${language}; \
-		install -m 644 src/app/texts/$${language}/strings $(STAGING_DIR)/app/texts/$${language}/strings; \
-	done
+	install -m 755 -d $(STAGING_DIR)/share
+	install -m 644 src/haproxy.cfg $(STAGING_DIR)/share/haproxy.cfg.tpl
+	install -m 755 -d $(STAGING_DIR)/share/haproxy-dashboard
+	cp -R src/haproxy-dashboard/* $(STAGING_DIR)/share/haproxy-dashboard/

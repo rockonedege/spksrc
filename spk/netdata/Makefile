@@ -1,0 +1,46 @@
+SPK_NAME = netdata
+SPK_VERS = 2.12.3
+SPK_REV = 6
+SPK_ICON = src/netdata.png
+
+DEPENDS = cross/netdata
+
+MAINTAINER = SynoCommunity
+DISPLAY_NAME = Netdata
+DESCRIPTION = Real-time performance monitoring, done right! Monitor your system with beautiful, interactive dashboards.
+CHANGELOG = "1. Update Netdata to v2.12.3. <br/>"
+CHANGELOG += "2. Add netdatacli and netdata-support-bundle wrappers, expose nd-mcp, and teach support-bundle the package paths."
+
+HOMEPAGE = https://www.netdata.cloud
+HELPURL = https://docs.synocommunity.com/packages/netdata/
+LICENSE = GPLv3
+
+STARTABLE = yes
+SERVICE_USER = auto
+SERVICE_SETUP = src/service-setup.sh
+
+ADMIN_PORT = 19999
+SERVICE_PORT = $(ADMIN_PORT)
+SERVICE_PORT_TITLE = Netdata (HTTP)
+FWPORTS = src/netdata.sc
+WIZARDS_DIR = src/wizard/
+SPK_COMMANDS = bin/netdata-fix bin/pgrep bin/netdatacli bin/netdata-support-bundle
+SPK_USR_LOCAL_LINKS = bin:usr/sbin/nd-mcp
+
+POST_STRIP_TARGET = netdata_extra_install
+
+include ../../mk/spksrc.spk.mk
+
+.PHONY: netdata_extra_install
+netdata_extra_install:
+	@$(MSG) Install netdata fix script
+	install -m 755 -d $(STAGING_DIR)/bin
+	install -m 755 src/bin/netdata-fix $(STAGING_DIR)/bin/netdata-fix
+	@$(MSG) Install netdatacli and support bundle wrappers
+	install -m 755 src/bin/netdatacli $(STAGING_DIR)/bin/netdatacli
+	install -m 755 src/bin/netdata-support-bundle $(STAGING_DIR)/bin/netdata-support-bundle
+	@$(MSG) Install default netdata configuration
+	install -m 755 -d $(STAGING_DIR)/var/etc/netdata
+	install -m 644 src/var/etc/netdata/netdata.conf $(STAGING_DIR)/var/etc/netdata/
+	@$(MSG) Remove build-time SNMP trap profile generator from package
+	rm -f $(STAGING_DIR)/usr/libexec/netdata/plugins.d/snmp-trap-profile-gen

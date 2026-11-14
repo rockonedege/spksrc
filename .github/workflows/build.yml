@@ -1,123 +1,888 @@
 name: Build
 
+# Add package name and optional publish for manual builds
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch' &&
+      format(
+        '{0} ({1})',
+        (inputs.publish && 'Build and Publish' || 'Build'),
+        inputs.package
+      )
+      || '' }}
+
+
 on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to repository'
+        required: false
+        default: false
+        type: boolean
+      package:
+        description: 'Package to build'
+        required: true
+        default: 'adminer'
+      add_dsm74_builds:
+        description: 'Include DSM 7.4 archs'
+        required: false
+        default: false
+        type: boolean
+      add_dsm73_builds:
+        description: 'Include DSM 7.3 archs'
+        required: false
+        default: false
+        type: boolean
+      add_dsm72_builds:
+        description: 'Include DSM 7.2 archs'
+        required: false
+        default: false
+        type: boolean
+      add_dsm71_builds:
+        description: 'Include DSM 7.1 archs'
+        required: false
+        default: true
+        type: boolean
+      add_dsm70_builds:
+        description: 'Include DSM 7.0 archs'
+        required: false
+        default: false
+        type: boolean
+      add_dsm62_builds:
+        description: 'Include DSM 6.2 archs'
+        required: false
+        default: true
+        type: boolean
+      add_dsm61_builds:
+        description: 'Include DSM 6.1 archs'
+        required: false
+        default: false
+        type: boolean
+      add_dsm52_builds:
+        description: 'Include DSM 5.2 archs'
+        required: false
+        default: false
+        type: boolean
+      add_srm13_builds:
+        description: 'Include SRM 1.3 archs'
+        required: false
+        default: false
+        type: boolean
+      add_srm12_builds:
+        description: 'Include SRM 1.2 archs'
+        required: false
+        default: false
+        type: boolean
+      add_noarch_builds:
+        description: 'Include noarch packages'
+        required: false
+        default: true
+        type: boolean
+      add_noarch_dsm74_builds:
+        description: 'Include noarch DSM 7.4 packages'
+        required: false
+        default: false
+        type: boolean
+      add_noarch_dsm73_builds:
+        description: 'Include noarch DSM 7.3 packages'
+        required: false
+        default: false
+        type: boolean
+      add_noarch_dsm72_builds:
+        description: 'Include noarch DSM 7.2 packages'
+        required: false
+        default: false
+        type: boolean
   pull_request:
     paths:
-    - 'spk/**'
-    - 'cross/**'
-    - 'native/**'
+      - 'spk/**'
+      - 'cross/**'
+      - 'driver/**'
+      - 'python/**'
+      - 'native/**'
   push:
-    tags:
-      - "*-*"
     branches:
       - "**"
     paths:
-    - 'spk/**'
-    - 'cross/**'
-    - 'native/**'
+      - 'spk/**'
+      - 'cross/**'
+      - 'driver/**'
+      - 'python/**'
+      - 'native/**'
+
+env:
+  # Per-arch build-time budget (seconds): 20700 = 5h45m, below GitHub's 6h job
+  # kill. build.sh hard-stops the in-progress build at this ceiling so completed
+  # .spk/diagnostics still upload and the remaining packages are reported.
+  BUILD_BUDGET_SECONDS: "20700"
+
+# Cancel a previous, now-superseded run while a pull request is still a Draft,
+# and on a push to a fork branch, so iterative pushes during development don't
+# pile up. Every other run (non-draft PR, upstream push, manual workflow_dispatch)
+# gets a unique per-run group: a shared concurrency group always constrains — at
+# most one running plus one pending run, with older pending runs evicted — even
+# when cancel-in-progress is false, which would serialize non-draft PR builds,
+# silently drop queued master builds and forbid parallel manual builds.
+concurrency:
+  group: >-
+    ${{ ((github.event_name == 'pull_request' && github.event.pull_request.draft)
+         || (github.event_name == 'push' && github.repository != 'SynoCommunity/spksrc'
+             && github.ref_name != 'master'))
+        && format('build-{0}-{1}', github.workflow, github.ref)
+        || format('build-run-{0}', github.run_id) }}
+  cancel-in-progress: >-
+    ${{ (github.event_name == 'pull_request' && github.event.pull_request.draft == true)
+        || (github.event_name == 'push' && github.repository != 'SynoCommunity/spksrc'
+            && github.ref_name != 'master') }}
 
 jobs:
+  # Decide whether the build should run at all.
+  # The rule: a build needs a pull request, and CI follows it.
+  #  - workflow_dispatch always builds, wherever it is started.
+  #  - pull_request always builds, in whichever repository the PR lives -- and it
+  #    fires only there, so a PR inside a fork is tested on that fork and a PR
+  #    against upstream is tested upstream, never both. It is the authoritative
+  #    run, covering the whole branch (origin/master...HEAD).
+  #  - a push to master upstream builds: the merge that confirms the result.
+  #  - every other push is skipped. A branch push carries only the latest commit
+  #    (git diff-tree) and no PR context, so with no PR there is nothing to
+  #    confirm, and with one the PR's own run already covers the whole branch.
+  #    A fork's master sync is skipped the same way: upstream validated it.
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    # Reads whether a pushed fork branch has an open pull request
+    permissions:
+      pull-requests: read
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A manual run, and a pull request wherever it lives, always build. The
+          # pull_request event fires only in the repository holding the PR, so a
+          # fork's own PR is tested on the fork and nowhere else.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
+             [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "${{ github.event_name }} -> build."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # push event from here on. Only the upstream master push builds -- the
+          # merge that confirms the result.
+          if [ "${{ github.repository }}" = "SynoCommunity/spksrc" ] && \
+             [ "${{ github.ref_name }}" = "master" ]; then
+            echo "Push to master upstream -> build."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A branch of a fork builds there until it has a pull request, in the fork
+          # or upstream, whose run then covers it. A fork's master is only synced.
+          if [ "${{ github.repository }}" != "SynoCommunity/spksrc" ] && \
+             [ "${{ github.ref_name }}" != "master" ]; then
+            head="${{ github.repository_owner }}:${{ github.ref_name }}"
+            if ! fork_prs=$(gh api "repos/${{ github.repository }}/pulls?state=open&head=${head}" --jq length) || \
+               ! upstream_prs=$(gh api "repos/SynoCommunity/spksrc/pulls?state=open&head=${head}" --jq length); then
+              echo "Push to ${head} -> skip; its pull requests could not be read, use workflow_dispatch."
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "${fork_prs}" = "0" ] && [ "${upstream_prs}" = "0" ]; then
+              echo "Push to ${head}, no pull request yet -> build on the fork."
+              echo "should_build=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Push to ${head} -> skip; its pull request runs where it lives."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Any other push: an upstream branch, or a fork's master sync.
+          echo "Push to ${{ github.repository }} ${{ github.ref_name }} -> skip; a build needs a PR, or workflow_dispatch."
+          echo "should_build=false" >> "$GITHUB_OUTPUT"
+
+  prepare:
+    name: Prepare for Build
+    runs-on: ubuntu-latest
+    needs: gate
+    if: needs.gate.outputs.should_build == 'true'
+    outputs:
+      arch_packages: ${{ steps.dependencies.outputs.arch_packages }}
+      noarch_packages: ${{ steps.dependencies.outputs.noarch_packages }}
+      arch_min_dsm72_packages: ${{ steps.dependencies.outputs.arch_min_dsm72_packages }}
+      noarch_min_dsm72_packages: ${{ steps.dependencies.outputs.noarch_min_dsm72_packages }}
+      arch_min_dsm73_packages: ${{ steps.dependencies.outputs.arch_min_dsm73_packages }}
+      noarch_min_dsm73_packages: ${{ steps.dependencies.outputs.noarch_min_dsm73_packages }}
+      arch_min_dsm74_packages: ${{ steps.dependencies.outputs.arch_min_dsm74_packages }}
+      noarch_min_dsm74_packages: ${{ steps.dependencies.outputs.noarch_min_dsm74_packages }}
+      has_arch_packages: ${{ steps.dependencies.outputs.has_arch_packages }}
+      has_noarch_packages: ${{ steps.dependencies.outputs.has_noarch_packages }}
+      has_arch_min_dsm72_packages: ${{ steps.dependencies.outputs.has_arch_min_dsm72_packages }}
+      has_noarch_min_dsm72_packages: ${{ steps.dependencies.outputs.has_noarch_min_dsm72_packages }}
+      has_arch_min_dsm73_packages: ${{ steps.dependencies.outputs.has_arch_min_dsm73_packages }}
+      has_noarch_min_dsm73_packages: ${{ steps.dependencies.outputs.has_noarch_min_dsm73_packages }}
+      has_arch_min_dsm74_packages: ${{ steps.dependencies.outputs.has_arch_min_dsm74_packages }}
+      has_noarch_min_dsm74_packages: ${{ steps.dependencies.outputs.has_noarch_min_dsm74_packages }}
+      videodriver: ${{ steps.dependencies.outputs.videodriver }}
+      distrib_hash: ${{ steps.distrib-hash.outputs.hash }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Get changed spk_packages and dependency_folders
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        id: getchanges
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_SHA: ${{ github.sha }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DELETED: ${{ github.event.deleted }}
+        run: |
+          BASE_REF="origin/${DEFAULT_BRANCH}"
+          if [ "${DELETED}" = "true" ]; then
+            DETECTION_MODE="deleted-branch"
+            CHANGED_FILES=""
+          elif [ "${EVENT_NAME}" = "pull_request" ]; then
+            DETECTION_MODE="pr-vs-default-branch"
+            CHANGED_FILES=$(git diff --no-commit-id --name-only -r "${BASE_REF}...${PR_HEAD_SHA}")
+          elif [ -n "${BEFORE_SHA}" ] && \
+               [ "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ] && \
+               git merge-base --is-ancestor "${BEFORE_SHA}" "${PUSH_SHA}" 2>/dev/null; then
+            # Fast-forward push (default-branch merges included): exactly the pushed
+            # range, so multi-commit and merge pushes are not reduced to the final commit.
+            DETECTION_MODE="fast-forward"
+            CHANGED_FILES=$(git diff --name-only "${BEFORE_SHA}" "${PUSH_SHA}")
+          elif [ "${REF_NAME}" != "${DEFAULT_BRANCH}" ] && \
+               git rev-parse --quiet --verify "${BASE_REF}" >/dev/null; then
+            # New branch, or history rewritten by a force-push (rebase): everything the
+            # branch changes against the default branch, as for a pull request.
+            # before..after would also carry what the default branch gained between the
+            # two bases.
+            DETECTION_MODE="branch-vs-default-branch"
+            CHANGED_FILES=$(git diff --name-only "${BASE_REF}...${PUSH_SHA}")
+          elif [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ] && \
+               [ -n "${BEFORE_SHA}" ] && \
+               [ "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ] && \
+               git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            # Rewritten default branch (force-push): compare the old and new trees so
+            # earlier commits in the rewritten history are not missed.
+            DETECTION_MODE="default-branch-rewrite"
+            CHANGED_FILES=$(git diff --name-only "${BEFORE_SHA}" "${PUSH_SHA}")
+          else
+            # No usable base to compare against: inspect the final commit.
+            DETECTION_MODE="final-commit-fallback"
+            echo "::warning::Using final-commit fallback; earlier commits in this push may not be inspected."
+            CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r "${PUSH_SHA}")
+          fi
+
+          echo "detection: ${DETECTION_MODE}"
+          echo "detection=${DETECTION_MODE}" >> "${GITHUB_OUTPUT}"
+          SPK_PACKAGES=$(printf '%s\n' "${CHANGED_FILES}" | grep -oP '^spk/\K[^/]*' | sort -u | xargs || true)
+          echo "spk_packages: ${SPK_PACKAGES}"
+          echo "spk_packages=${SPK_PACKAGES}" >> "${GITHUB_OUTPUT}"
+
+          DEPENDENCY_FOLDERS=$(printf '%s\n' "${CHANGED_FILES}" | grep -oP '^(cross|driver|python|native)/[^/]*' | sort -u | xargs || true)
+          echo "dependency_folders: ${DEPENDENCY_FOLDERS}"
+          echo "dependency_folders=${DEPENDENCY_FOLDERS}" >> "${GITHUB_OUTPUT}"
+
+      - name: Evaluate dependencies
+        id: dependencies
+        run: ./.github/actions/prepare.sh
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GH_SPK_PACKAGES: ${{ steps.getchanges.outputs.spk_packages }}
+          GH_DEPENDENCY_FOLDERS: ${{ steps.getchanges.outputs.dependency_folders }}
+          USER_SPK_TO_BUILD: ${{ github.event.inputs.package }}
+
+      - name: Restore distrib cache
+        id: cache-restore
+        uses: actions/cache/restore@v6
+        with:
+          path: distrib
+          # Use a placeholder key that will never match for the exact key,
+          # forcing GitHub to use restore-keys to find the best available cache
+          key: distrib-placeholder-${{ github.run_id }}
+          restore-keys: |
+            distrib-
+
+      - name: Download source files
+        run: ./.github/actions/download.sh
+        env:
+          DOWNLOAD_PACKAGES: ${{ steps.dependencies.outputs.download_packages }}
+          ARCH_PACKAGES: ${{ steps.dependencies.outputs.arch_packages }}
+          NOARCH_PACKAGES: ${{ steps.dependencies.outputs.noarch_packages }}
+
+      - name: Compute distrib hash
+        id: distrib-hash
+        run: |
+          # Compute a hash based on file paths and sizes (not content) for performance.
+          # This is fast even with thousands of files since we don't read file contents.
+          # Including file size ensures that if a corrupted file (.wrong) is replaced
+          # by a fresh download with different size, the hash will change.
+          # Format: "path size" per line, sorted for reproducibility, then hashed.
+          if [ -d "distrib" ] && [ -n "$(ls -A distrib 2>/dev/null)" ]; then
+            HASH=$(find distrib -type f -printf '%p %s\n' | sort | sha256sum | cut -d' ' -f1)
+          else
+            HASH="empty"
+          fi
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+          echo "Distrib cache hash: $HASH"
+
+      - name: Check if cache already exists
+        id: cache-check
+        run: |
+          # Check if a cache with this exact hash already exists to avoid duplication.
+          # We search for the exact key pattern to see if this content was already cached.
+          CACHE_KEY="distrib-${{ steps.distrib-hash.outputs.hash }}"
+          if gh cache list --json key | jq -e --arg key "$CACHE_KEY" '.[] | select(.key == $key)' > /dev/null 2>&1; then
+            echo "Cache with key $CACHE_KEY already exists, skipping save"
+            echo "save_cache=false" >> $GITHUB_OUTPUT
+          else
+            echo "New cache content detected, will save with key: $CACHE_KEY"
+            echo "save_cache=true" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save distrib cache
+        if: steps.cache-check.outputs.save_cache == 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: distrib
+          key: distrib-${{ steps.distrib-hash.outputs.hash }}
+
+  set-defaults:
+    name: Set Defaults
+    runs-on: ubuntu-latest
+    needs: prepare
+    outputs:
+      matrix: ${{ steps.defaults.outputs.matrix }}
+      has_entries: ${{ steps.defaults.outputs.has_entries }}
+    steps:
+      - id: defaults
+        run: |
+          # Retrieve inputs and package availability
+          add_dsm74_builds=${{ github.event.inputs.add_dsm74_builds || 'false' }}
+          add_dsm73_builds=${{ github.event.inputs.add_dsm73_builds || 'false' }}
+          add_dsm72_builds=${{ github.event.inputs.add_dsm72_builds || 'false' }}
+          add_dsm71_builds=${{ github.event.inputs.add_dsm71_builds || 'false' }}
+          add_dsm70_builds=${{ github.event.inputs.add_dsm70_builds || 'false' }}
+          add_dsm62_builds=${{ github.event.inputs.add_dsm62_builds || 'false' }}
+          add_dsm61_builds=${{ github.event.inputs.add_dsm61_builds || 'false' }}
+          add_dsm52_builds=${{ github.event.inputs.add_dsm52_builds || 'false' }}
+          add_srm13_builds=${{ github.event.inputs.add_srm13_builds || 'false' }}
+          add_srm12_builds=${{ github.event.inputs.add_srm12_builds || 'false' }}
+          add_noarch_builds=${{ github.event.inputs.add_noarch_builds || 'false' }}
+          add_noarch_dsm72_builds=${{ github.event.inputs.add_noarch_dsm72_builds || 'false' }}
+          add_noarch_dsm73_builds=${{ github.event.inputs.add_noarch_dsm73_builds || 'false' }}
+          add_noarch_dsm74_builds=${{ github.event.inputs.add_noarch_dsm74_builds || 'false' }}
+          has_arch_packages=${{ needs.prepare.outputs.has_arch_packages || 'false' }}
+          has_arch_min_dsm72_packages=${{ needs.prepare.outputs.has_arch_min_dsm72_packages || 'false' }}
+          has_arch_min_dsm73_packages=${{ needs.prepare.outputs.has_arch_min_dsm73_packages || 'false' }}
+          has_arch_min_dsm74_packages=${{ needs.prepare.outputs.has_arch_min_dsm74_packages || 'false' }}
+          has_noarch_packages=${{ needs.prepare.outputs.has_noarch_packages || 'false' }}
+          has_noarch_min_dsm72_packages=${{ needs.prepare.outputs.has_noarch_min_dsm72_packages || 'false' }}
+          has_noarch_min_dsm73_packages=${{ needs.prepare.outputs.has_noarch_min_dsm73_packages || 'false' }}
+          has_noarch_min_dsm74_packages=${{ needs.prepare.outputs.has_noarch_min_dsm74_packages || 'false' }}
+
+          # Dynamic logic for automatic builds
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            # Enable DSM 7.4 builds if arch packages require minimum DSM 7.4
+            add_dsm74_builds=$([ "$has_arch_min_dsm74_packages" == "true" ] && echo "true" || echo "false")
+
+            # Enable DSM 7.3 builds if arch packages require minimum DSM 7.3
+            add_dsm73_builds=$([ "$has_arch_min_dsm73_packages" == "true" ] && echo "true" || echo "false")
+
+            # Enable DSM 7.2 builds if arch packages require minimum DSM 7.2
+            add_dsm72_builds=$([ "$has_arch_min_dsm72_packages" == "true" ] && echo "true" || echo "false")
+
+            # Enable DSM 7.1 builds if arch packages exist
+            add_dsm71_builds=$([ "$has_arch_packages" == "true" ] && echo "true" || echo "false")
+
+            # Enable DSM 6.2 builds if arch packages exist
+            add_dsm62_builds=$([ "$has_arch_packages" == "true" ] && echo "true" || echo "false")
+
+            # Enable noarch builds if noarch packages exist
+            add_noarch_builds=$([ "$has_noarch_packages" == "true" ] && echo "true" || echo "false")
+
+            # Enable noarch DSM 7.4 builds if noarch packages require minimum DSM 7.4
+            add_noarch_dsm74_builds=$([ "$has_noarch_min_dsm74_packages" == "true" ] && echo "true" || echo "false")
+
+            # Enable noarch DSM 7.3 builds if noarch packages require minimum DSM 7.3
+            add_noarch_dsm73_builds=$([ "$has_noarch_min_dsm73_packages" == "true" ] && echo "true" || echo "false")
+
+            # Enable noarch DSM 7.2 builds if noarch packages require minimum DSM 7.2
+            add_noarch_dsm72_builds=$([ "$has_noarch_min_dsm72_packages" == "true" ] && echo "true" || echo "false")
+          fi
+
+          # Build matrix
+          matrix=$(jq -n '{"include": []}')
+
+          # Helper function to add entries to the matrix
+          add_to_matrix() {
+            matrix=$(echo "$matrix" | jq --arg arch "$1" '.include += [{"arch": $arch}]')
+          }
+
+          # Add noarch builds
+          if [ "$add_noarch_builds" == "true" ]; then
+            add_to_matrix "noarch-1.1"
+            add_to_matrix "noarch-3.1"
+            add_to_matrix "noarch-6.1"
+            add_to_matrix "noarch-7.0"
+          fi
+
+          # Add noarch DSM 7.2 builds
+          if [ "$add_noarch_dsm72_builds" == "true" ]; then
+            add_to_matrix "noarch-7.2"
+          fi
+
+          # Add noarch DSM 7.4 builds
+          if [ "$add_noarch_dsm74_builds" == "true" ]; then
+            add_to_matrix "noarch-7.4"
+          fi
+
+          # Add noarch DSM 7.3 builds
+          if [ "$add_noarch_dsm73_builds" == "true" ]; then
+            add_to_matrix "noarch-7.3"
+          fi
+
+          # Add DSM 7.4 builds
+          if [ "$add_dsm74_builds" == "true" ]; then
+            add_to_matrix "x64-7.4"
+            add_to_matrix "aarch64-7.4"
+            add_to_matrix "armv7-7.4"
+          fi
+
+          # Add DSM 7.3 builds
+          if [ "$add_dsm73_builds" == "true" ]; then
+            add_to_matrix "x64-7.3"
+            add_to_matrix "aarch64-7.3"
+            add_to_matrix "armv7-7.3"
+          fi
+
+          # Add DSM 7.2 builds
+          if [ "$add_dsm72_builds" == "true" ]; then
+            add_to_matrix "x64-7.2"
+            add_to_matrix "aarch64-7.2"
+            add_to_matrix "armv7-7.2"
+          fi
+
+          # Add DSM 7.1 builds
+          if [ "$add_dsm71_builds" == "true" ]; then
+            add_to_matrix "x64-7.1"
+            add_to_matrix "aarch64-7.1"
+            add_to_matrix "evansport-7.1"
+            add_to_matrix "armv7-7.1"
+            add_to_matrix "comcerto2k-7.1"
+          fi
+
+          # Add DSM 7.0 builds
+          if [ "$add_dsm70_builds" == "true" ]; then
+            add_to_matrix "x64-7.0"
+            add_to_matrix "aarch64-7.0"
+            add_to_matrix "evansport-7.0"
+            add_to_matrix "armv7-7.0"
+            add_to_matrix "comcerto2k-7.0"
+          fi
+
+          # Add DSM 6.2 builds
+          if [ "$add_dsm62_builds" == "true" ]; then
+            add_to_matrix "x64-6.2.4"
+            add_to_matrix "aarch64-6.2.4"
+            add_to_matrix "evansport-6.2.4"
+            add_to_matrix "armv7-6.2.4"
+            add_to_matrix "hi3535-6.2.4"
+            add_to_matrix "88f6281-6.2.4"
+            add_to_matrix "qoriq-6.2.4"
+          fi
+
+          # Add DSM 6.1 builds
+          if [ "$add_dsm61_builds" == "true" ]; then
+            add_to_matrix "x64-6.1"
+            add_to_matrix "aarch64-6.1"
+            add_to_matrix "evansport-6.1"
+            add_to_matrix "armv7-6.1"
+            add_to_matrix "hi3535-6.1"
+            add_to_matrix "88f6281-6.1"
+            add_to_matrix "qoriq-6.1"
+          fi
+
+          # Add DSM 5.2 builds
+          if [ "$add_dsm52_builds" == "true" ]; then
+            add_to_matrix "x86-5.2"
+            add_to_matrix "88f6281-5.2"
+            add_to_matrix "ppc853x-5.2"
+          fi
+
+          # Add SRM 1.3 builds
+          if [ "$add_srm13_builds" == "true" ]; then
+            add_to_matrix "aarch64-1.3"
+            add_to_matrix "armv7-1.3"
+          fi
+
+          # Add SRM 1.2 builds
+          if [ "$add_srm12_builds" == "true" ]; then
+            add_to_matrix "armv7-1.2"
+          fi
+
+          # Output the final matrix
+          echo "matrix=$(echo $matrix | jq -c)" >> $GITHUB_OUTPUT
+
+          # Output if the matrix has entries
+          echo "has_entries=$(jq -e '.include | length > 0' <<< "$matrix" > /dev/null && echo true || echo false)" >> $GITHUB_OUTPUT
+
   build:
     name: Build
+    needs: [prepare, set-defaults]
     runs-on: ubuntu-latest
+    if: needs.set-defaults.outputs.has_entries == 'true'
     strategy:
       fail-fast: false
-      matrix:
-        # x64=x86_64, evansport=x86, aarch64=armv8, armv7, 88f6281=armv5, ppc853x/qoriq=ppc
-        # https://github.com/SynoCommunity/spksrc/wiki/Synology-and-SynoCommunity-Package-Architectures
-        arch: [noarch, x64-6.1, evansport-6.1, aarch64-6.1, armv7-6.1, armv7-1.2, 88f6281-6.1, qoriq-6.1, ppc853x-5.2]
-
+      matrix: ${{ fromJSON(needs.set-defaults.outputs.matrix) }}
     steps:
-      - name: Cache toolchains
-        uses: actions/cache@v1
-        with:
-          path: toolchains
-          key: toolchains-${{ matrix.arch }}-v2
-          restore-keys: toolchains-${{ matrix.arch }}
-
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v7
+
+      # Free up disk space on GitHub runner before build starts
+      - name: Free Disk Space (Ubuntu)
+        run: |
+          echo "=========================================="
+          echo "DISK SPACE BEFORE CLEANUP"
+          echo "=========================================="
+          df -h
+          
+          echo ""
+          echo "=== Removing unnecessary files ==="
+
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+
+          echo ""
+          echo "=========================================="
+          echo "DISK SPACE AFTER CLEANUP"
+          echo "=========================================="
+          df -h
+          echo ""
+
+      - name: Cache toolchains
+        uses: actions/cache@v6
+        # Do not cache qoriq toolchain. It must be built every time to install custom rust toolchain
+        if: ${{ contains(matrix.arch,'qoriq') == false }}
         with:
-            fetch-depth: 0
-            persist-credentials: false
+          path: |
+            toolchain/*/work
+            overlay/*/work
+          key: toolchain-${{ matrix.arch }}-v4-${{ hashFiles(format('toolchain/syno-{0}/digests',matrix.arch), format('overlay/syno-{0}_*/digests',matrix.arch)) }}
 
-      - name: Get changed files for pull request
-        if: github.event_name == 'pull_request'
-        id: getfile_pr
+      - name: Restore distrib cache
+        uses: actions/cache/restore@v6
+        with:
+          path: distrib
+          # Use a placeholder key that will never match for the exact key,
+          # forcing GitHub to use restore-keys to find the best available cache
+          key: distrib-placeholder-${{ github.run_id }}
+          restore-keys: |
+            distrib-
+
+      # Check disk space after distrib cache restore
+      - name: Disk Space After Distrib Restore
         run: |
-          git diff --no-commit-id --name-only -r origin/master...${{github.event.pull_request.head.sha}} | xargs
-          echo "::set-output name=files::$(git diff --no-commit-id --name-only -r origin/master...${{github.event.pull_request.head.sha}} | xargs)"
+          echo "=== Disk Space after Distrib ==="
+          df -h
+          du -sh distrib 2>/dev/null || echo "No distrib directory"
 
-      - name: Get changed files for push
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') == false
-        id: getfile
-        run: |
-          git diff-tree --no-commit-id --name-only -r ${{ github.sha }} | xargs
-          echo "::set-output name=files::$(git diff-tree --no-commit-id --name-only -r ${{ github.sha }} | xargs)"
-
-      - name: Build Package (file changes)
-        if: startsWith(github.ref, 'refs/tags/') == false
-        # We don't want to stop the build on errors. 
+      - name: Build Package (based on changed files)
+        # We don't want to stop the build on errors.
         # Errors are reported in "Build Status"
         continue-on-error: true
-        uses: docker://synocommunity/spksrc:latest
+        # Hard backstop below the 6h job kill in case build.sh's own budget can't
+        # stop in time (e.g. a single package hangs); the always() steps below
+        # still run and upload whatever completed.
+        timeout-minutes: 350
+        uses: docker://ghcr.io/synocommunity/spksrc:latest
         with:
           entrypoint: ./.github/actions/build.sh
         env:
-          GH_FILES: ${{ steps.getfile.outputs.files }} ${{ steps.getfile_pr.outputs.files }}
-          # https://github.com/SynoCommunity/spksrc/wiki/Compile-and-build-rules
+          ARCH_PACKAGES: ${{ needs.prepare.outputs.arch_packages }}
+          NOARCH_PACKAGES: ${{ needs.prepare.outputs.noarch_packages }}
+          ARCH_MIN_DSM72_PACKAGES: ${{ needs.prepare.outputs.arch_min_dsm72_packages }}
+          NOARCH_MIN_DSM72_PACKAGES: ${{ needs.prepare.outputs.noarch_min_dsm72_packages }}
+          ARCH_MIN_DSM73_PACKAGES: ${{ needs.prepare.outputs.arch_min_dsm73_packages }}
+          NOARCH_MIN_DSM73_PACKAGES: ${{ needs.prepare.outputs.noarch_min_dsm73_packages }}
+          ARCH_MIN_DSM74_PACKAGES: ${{ needs.prepare.outputs.arch_min_dsm74_packages }}
+          NOARCH_MIN_DSM74_PACKAGES: ${{ needs.prepare.outputs.noarch_min_dsm74_packages }}
+          VIDEODRV: ${{ needs.prepare.outputs.videodriver }}
+          PUBLISH: ${{ github.event.inputs.publish }}
+          API_KEY: ${{ secrets.PUBLISH_API_KEY }}
+          PACKAGE_TO_PUBLISH: ${{ github.event.inputs.package }}
+          # https://docs.synocommunity.com/developer-guide/packaging/build-rules/
           GH_ARCH: ${{ matrix.arch }}
           BUILD_ERROR_FILE: /github/workspace/build_errors.txt
+          BUILD_ERROR_LOGFILE: /github/workspace/build_log_errors.txt
           BUILD_UNSUPPORTED_FILE: /github/workspace/build_unsupported.txt
           BUILD_SUCCESS_FILE: /github/workspace/build_success.txt
+          BUILD_BUDGET_SECONDS: ${{ env.BUILD_BUDGET_SECONDS }}
+          BUILD_REMAINING_FILE: /github/workspace/build_remaining.txt
+          BUILD_TIMEOUT_FILE: /github/workspace/build_timeout.txt
 
-      - name: Build Package (Tag)
-        if: startsWith(github.ref, 'refs/tags/')
-        # We don't want to stop the build on errors. 
-        # Errors are reported in "Build Status"
-        continue-on-error: true
-        uses: docker://synocommunity/spksrc:latest
-        with:
-          entrypoint: ./.github/actions/build-tag.sh
-        env:
-          # https://github.com/SynoCommunity/spksrc/wiki/Compile-and-build-rules
-          GH_ARCH: ${{ matrix.arch }}
-          #   API_KEY: ${{ secrets.PUBLISH_API_KEY }}
-          BUILD_ERROR_FILE: /github/workspace/build_errors.txt
-          BUILD_UNSUPPORTED_FILE: /github/workspace/build_unsupported.txt
-          BUILD_SUCCESS_FILE: /github/workspace/build_success.txt
+      # Capture Docker logs when build fails
+      - name: Capture Docker Logs on Failure
+        if: failure()
+        run: |
+          echo "=== Attempting to capture docker logs ==="
+          docker ps -a || true
+          docker logs $(docker ps -aq | head -1) 2>&1 | tail -500 > docker_logs.txt || echo "Could not capture docker logs"
+
+      # Collect build logs from each spk/<pkg>/ directory:
+      # - top-level logs: build.log, build-<arch>.log, status-*.log, publish-*.log
+      # - work-<arch>-<version>/ logs: config.log, CMakeOutput.log,
+      #   meson-log.txt, ninja.log, etc. (preserving relative path for context)
+      - name: Collect Build Logs from SPK directories
+        if: always()
+        run: |
+          echo "=== Collecting build logs from spk directories ==="
+          mkdir -p collected_logs
+
+          # Patterns to collect from spk/<pkg>/ (top-level logs)
+          TOP_LEVEL_PATTERNS=(
+            "build-*.log"
+            "status-*.log"
+            "publish-*.log"
+            "build.log"
+          )
+
+          # Patterns to collect recursively inside work-<arch>-<version>/ directories
+          # These cover cmake, meson, autotools, ninja, cargo, etc.
+          WORK_PATTERNS=(
+            "build.log"
+            "config.log"
+            "configure.log"
+            "CMakeCache.txt"
+            "CMakeOutput.log"
+            "CMakeError.log"
+            "install_manifest.txt"
+            "meson-log.txt"
+            ".ninja_log"
+            "ninja.log"
+            "cargo.log"
+            "*.log"
+          )
+
+          # Patterns to collect files specific at spk creation time
+          SPK_PATTERNS=(
+            ".copy_done"
+            ".dependency_done"
+            ".icon_done"
+            ".strip_done"
+            ".stage0-tcvars_done"
+            ".stage1-tcvars_done"
+            ".stage1-tkvars_done"
+            ".wheel_done"
+            "INFO"
+            "PLIST"
+            "PACKAGE_ICON*"
+            "WIZARD_UIFILES"
+          )
+
+          # Patterns to collect toolchain and toolkit environment
+          TCVARS_PATTERNS=(
+            "tc_vars*.mk"
+            "tc_vars.cmake"
+            "tc_vars.meson-*"
+          )
+
+          for pkg_dir in spk/*/; do
+            pkg=$(basename "$pkg_dir")
+
+            # ── Top-level package logs (build-<arch>.log, status-build.log …) ──
+            for pattern in "${TOP_LEVEL_PATTERNS[@]}"; do
+              find "$pkg_dir" -maxdepth 1 -type f -name "$pattern" -print0 2>/dev/null \
+              | while IFS= read -r -d '' logfile; do
+                  dest="collected_logs/${pkg}/$(basename "$logfile")"
+                  mkdir -p "$(dirname "$dest")"
+                  cp -p "$logfile" "$dest"
+                  echo "Collected top-level: $logfile"
+                done
+            done
+
+            find "$pkg_dir" -maxdepth 1 -type d -name "work-*" -print0 2>/dev/null \
+            | while IFS= read -r -d '' work_dir; do
+                work_name=$(basename "$work_dir")
+                dest_dir="collected_logs/${pkg}/${work_name}"
+                mkdir -p "$dest_dir"
+
+                # ── Logs inside work-<arch>-<version>/ directories ──
+                for pattern in "${WORK_PATTERNS[@]}"; do
+                  find "$work_dir" -type f -name "$pattern" -print0 2>/dev/null
+                done | sort -zu \
+                | while IFS= read -r -d '' logfile; do
+                    rel="${logfile#${work_dir}/}"
+                    dest="${dest_dir}/${rel}"
+                    mkdir -p "$(dirname "$dest")"
+                    cp -p "$logfile" "$dest"
+                    echo "Collected work log: $logfile"
+                done
+
+                # ── Toolchain/toolkit environment (tc_vars) ──
+                for pattern in "${TCVARS_PATTERNS[@]}"; do
+                  find "$work_dir" -maxdepth 1 \( -type f -o -type l \) -name "$pattern" -print0 2>/dev/null \
+                  | while IFS= read -r -d '' f; do
+                      cp -pL "$f" "$dest_dir/"
+                      echo "Collected tcvars: $f"
+                  done
+                done
+
+                # ── SPK creation state (spk cookies) ──
+                for pattern in "${SPK_PATTERNS[@]}"; do
+                  find "$work_dir" -maxdepth 1 \( -type f -o -type l \) -name "$pattern" -print0 2>/dev/null \
+                  | while IFS= read -r -d '' f; do
+                      cp -p "$f" "$dest_dir/"
+                      echo "Collected spk state: $f"
+                  done
+                done
+
+                # ── Dependency status cookies (.*_done minus SPK_PATTERNS) ──
+                exclude_args=""
+                for pattern in "${SPK_PATTERNS[@]}"; do
+                  exclude_args="$exclude_args ! -name $pattern"
+                done
+                find "$work_dir" -maxdepth 1 -type f -name ".*_done" $exclude_args -print0 2>/dev/null \
+                | while IFS= read -r -d '' f; do
+                    cp -p "$f" "$dest_dir/"
+                    echo "Collected status cookie: $f"
+                done
+
+                # ── library build state work-<arch>-<version>/install/.../lib/pkgconfig ──
+                PKGCONFIG_DIR="$work_dir/install/var/packages/$pkg/target/lib/pkgconfig"
+                if [ -d "$PKGCONFIG_DIR" ]; then
+                  find "$PKGCONFIG_DIR" -type f -name "*.pc" -print0 2>/dev/null \
+                  | while IFS= read -r -d '' f; do
+                      rel="${f#${PKGCONFIG_DIR}/}"
+                      dest="collected_logs/${pkg}/${work_name}/pkgconfig/${rel}"
+                      mkdir -p "$(dirname "$dest")"
+                      cp -p "$f" "$dest"
+                      echo "Collected pkgconfig: $f"
+                  done
+                fi
+              done
+          done
+
+          # Display summary of collected logs
+          echo ""
+          echo "=== Summary of collected logs ==="
+          find collected_logs -type f | sort | while read f; do
+            size=$(du -sh "$f" 2>/dev/null | cut -f1)
+            echo "  $size  $f"
+          done
+
+          # Quick tail of the main build log for this arch
+          echo ""
+          echo "=== Last 100 lines of build-${{ matrix.arch }}.log ==="
+          find spk/ -maxdepth 2 -type f -name "build-${{ matrix.arch }}.log" \
+            -exec tail -100 {} \; 2>/dev/null \
+            || echo "No build-${{ matrix.arch }}.log found"
+
+          echo ""
+          echo "=== status-build.log ==="
+          find spk/ -maxdepth 2 -type f -name "status-build.log" \
+            -exec cat {} \; 2>/dev/null \
+            || echo "No status-build.log found"
 
       - name: Build Status
         id: build_status
         # We need this status since we don't want to stop the build on errors.
         # Here we fail on build errors found in the build error file.
-        uses: docker://synocommunity/spksrc:latest
+        uses: docker://ghcr.io/synocommunity/spksrc:latest
         with:
           entrypoint: ./.github/actions/build_status.sh
         env:
           BUILD_ERROR_FILE: /github/workspace/build_errors.txt
+          BUILD_ERROR_LOGFILE: /github/workspace/build_log_errors.txt
           BUILD_UNSUPPORTED_FILE: /github/workspace/build_unsupported.txt
           BUILD_SUCCESS_FILE: /github/workspace/build_success.txt
+          BUILD_REMAINING_FILE: /github/workspace/build_remaining.txt
+          BUILD_TIMEOUT_FILE: /github/workspace/build_timeout.txt
+
+      # Assemble flat diagnostics and the full collected_logs tree
+      # into artifacts/diagnostics/ for upload.
+      - name: Organize Diagnostic Logs
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "=== Organizing diagnostic files ==="
+          mkdir -p artifacts/diagnostics/collected_logs
+
+          # Copy flat diagnostic files
+          for file in docker_logs.txt \
+                      build_errors.txt build_log_errors.txt \
+                      build_unsupported.txt build_success.txt \
+                      build_remaining.txt build_timeout.txt; do
+            [ -f "$file" ] && cp -p "$file" "artifacts/diagnostics/$file"
+          done
+
+          # Copy collected_logs tree (preserves pkg/work-<arch>/ structure)
+          if [ -d collected_logs ] && [ -n "$(ls -A collected_logs 2>/dev/null)" ]; then
+            cp -pr collected_logs/. artifacts/diagnostics/collected_logs/
+            echo "Copied $(find artifacts/diagnostics/collected_logs -type f | wc -l) log files"
+          else
+            echo "No collected logs to copy"
+          fi
+
+          echo "=== Diagnostic artifact contents ==="
+          find artifacts/diagnostics -type f | sort | while read f; do
+            size=$(du -sh "$f" 2>/dev/null | cut -f1)
+            echo "  $size  $f"
+          done
+
+      # Upload per-arch diagnostics (retention: 1 day).
+      # Consolidated across all archs by the consolidate-diagnostics job (retention: 30 days).
+      - name: Upload Diagnostic Logs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: diagnostics-${{ matrix.arch }}
+          path: artifacts/diagnostics/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 1
+          compression-level: 9
 
       - name: Upload artifacts
-        if: success()
-        uses: actions/upload-artifact@v2
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
-          name: packages
+          name: Packages for ${{ matrix.arch }}
           path: packages/*.spk
+          if-no-files-found: ignore
+          include-hidden-files: true
 
-  release:
-    needs: build
-    name: Release
-    if: startsWith(github.ref, 'refs/tags/')
+  consolidate-diagnostics:
+    name: Consolidate Diagnostics
+    needs: [gate, build]
     runs-on: ubuntu-latest
+    if: always() && needs.gate.outputs.should_build == 'true'
     steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v2
-
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v1
+      - name: Download all diagnostic artifacts
+        uses: actions/download-artifact@v8
         with:
-          files: 'packages/*.spk'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          pattern: diagnostics-*
+          path: all-diagnostics
+          merge-multiple: false
+
+      - name: Upload consolidated diagnostics
+        uses: actions/upload-artifact@v7
+        with:
+          name: Diagnostics
+          path: all-diagnostics/**
+          if-no-files-found: ignore
+          include-hidden-files: true
+          compression-level: 9

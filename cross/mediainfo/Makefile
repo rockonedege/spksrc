@@ -1,22 +1,10 @@
-PKG_NAME = mediainfo
-PKG_VERS = 20.03
-PKG_EXT = tar.gz
-PKG_DIST_NAME = $(PKG_NAME)_$(PKG_VERS).$(PKG_EXT)
-PKG_DIST_SITE = https://github.com/MediaArea/MediaInfo/archive/v$(PKG_VERS)
-PKG_DIR = MediaInfo-$(PKG_VERS)/Project/GNU/CLI
+PKG_NAME = mediainfo-virtual
 
-DEPENDS = cross/libmediainfo
+# mirrors mediainfo-25.04, the fallback, which needs -std=c++11
+MIN_GCC_VERSION = 4.7
 
-HOMEPAGE = https://mediaarea.net/en/MediaInfo
-COMMENT  = MediaInfo is a convenient unified display of the most relevant technical and tag data for video and audio files.
-LICENSE  = BSD
+include ../../mk/spksrc.common.mk
 
-PRE_CONFIGURE_TARGET = mediainfo_pre_configure
-GNU_CONFIGURE = 1
+$(call depend,cross/mediainfo-latest|cross/mediainfo-25.04)
 
-CONFIGURE_ARGS = --enable-shared
-
-include ../../mk/spksrc.cross-cc.mk
-
-mediainfo_pre_configure:
-	$(RUN) ; ./autogen.sh
+include ../../mk/spksrc.cross-virtual.mk

@@ -1,39 +1,37 @@
 SPK_NAME = minio
-SPK_VERS = 2020-07-24T22-43-05Z
-SPK_REV = 6
+SPK_VERS = 2025.10.15
+SPK_REV = 17
 SPK_ICON = src/minio.png
 DSM_UI_DIR = app
 
-DEPENDS = cross/busybox cross/$(SPK_NAME)
-
-UNSUPPORTED_ARCHS = $(PPC_ARCHES)
-GENERIC_ARCHS = ARM7
+DEPENDS = cross/minio cross/minio-client
 
 MAINTAINER = fgma
-DESCRIPTION = MinIO is a high performance object storage server compatible with Amazon S3 APIs.
-RELOAD_UI = yes
+DESCRIPTION = MinIO is a high performance object storage server compatible with Amazon S3 APIs. This Package includes the 'minio-client' \(mc\).
 DISPLAY_NAME = MinIO
-CHANGELOG = "This is a major release with object versioning support and security release to address issues to two recently reported security issues in golang. Breaking changes are only relevant for erasure coded and distributed erasure coded setups."
+CHANGELOG = "1. Update to MinIO RELEASE.2025-10-15T17-29-55Z (security fixes, including privilege escalation via STS/service accounts). <br/>2. FS-mode data from old installations cannot be read by newer versions. <br/>3. Upstream MinIO repository has been archived; no further releases are expected."
+LICENSE_FILE = $(WORK_DIR)/src/github.com/minio/minio/LICENSE
 HOMEPAGE = https://min.io/
-LICENSE = Apache License 2.0
+LICENSE = AGPLv3.0
+
+WIZARDS_DIR = src/wizard
+
 STARTABLE = yes
-
-WIZARDS_DIR = src/wizard/
-
 SERVICE_USER = auto
 SERVICE_SETUP = src/service-setup.sh
-SERVICE_PORT = 9000
-SERVICE_PORT_TITLE = $(DISPLAY_NAME)
-SERVICE_WIZARD_SHARE = wizard_data_directory
+SERVICE_WIZARD_SHARENAME = wizard_data_directory
+FWPORTS = src/minio.sc
+# Console Port (API Port is 9000)
+ADMIN_PORT = 9001
 
-# Use busybox start-stop-daemon support
-# Options and environment are provided in service-setup.sh
-SERVICE_EXE = $${SYNOPKG_PKGDEST}/bin/minio
+POST_STRIP_TARGET = minio_extra_install
 
-# Admin link for in DSM UI
-ADMIN_PORT = $(SERVICE_PORT)
-
-BUSYBOX_CONFIG = usrmng daemon nice
-ENV += BUSYBOX_CONFIG="$(BUSYBOX_CONFIG)"
+# official binary is "mc" not "minio-client", but "mc" is already used for midnight-commander
+SPK_COMMANDS = bin/minio-client
 
 include ../../mk/spksrc.spk.mk
+
+.PHONY: minio_extra_install
+minio_extra_install:
+	@install -d -m 755 $(STAGING_DIR)/var
+	@install -m 644 src/environment-variables $(STAGING_DIR)/var/

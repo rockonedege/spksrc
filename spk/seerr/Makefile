@@ -1,0 +1,43 @@
+SPK_NAME = seerr
+SPK_VERS = 3.5.2
+SPK_REV = 11
+SPK_ICON = src/seerr.png
+
+DEPENDS = cross/seerr
+BUILD_DEPENDS = native/nodejs-22
+
+SPK_DEPENDS = "Node.js_v22"
+
+# Node.js_v22 (Synology package) declares os_min_ver="7.2-60085"
+REQUIRED_MIN_DSM = 7.2
+
+MAINTAINER = SynoCommunity
+DESCRIPTION = "Media request management for Jellyfin, Plex, and Emby with automation integrations."
+DISPLAY_NAME = Seerr
+CHANGELOG = "Update to v3.5.2 (security fixes)"
+HOMEPAGE = https://github.com/seerr-team/seerr
+LICENSE = MIT
+
+SERVICE_USER = auto
+SERVICE_SETUP = src/service-setup.sh
+STARTABLE = yes
+
+SERVICE_PORT = 5055
+SERVICE_PORT_TITLE = Seerr (HTTP)
+ADMIN_PORT = $(SERVICE_PORT)
+
+USE_ALTERNATE_TMPDIR = 1
+
+POST_STRIP_TARGET += seerr_install
+
+include ../../mk/spksrc.spk.mk
+
+.PHONY: seerr_install
+seerr_install:
+	install -m 755 -d $(STAGING_DIR)/share
+	cp -a $(STAGING_INSTALL_PREFIX)/share/seerr $(STAGING_DIR)/share/
+	install -m 755 -d $(STAGING_DIR)/var/config
+	cp -a $(STAGING_DIR)/share/seerr/config/. $(STAGING_DIR)/var/config/ || true
+	install -m 644 src/seerr.env $(STAGING_DIR)/share/
+	rm -rf $(STAGING_DIR)/share/seerr/config
+	ln -sf /var/packages/$(SPK_NAME)/var/config $(STAGING_DIR)/share/seerr/config

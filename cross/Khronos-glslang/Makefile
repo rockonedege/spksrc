@@ -1,0 +1,36 @@
+PKG_NAME = glslang
+PKG_VERS = 16.1.0
+PKG_EXT = tar.gz
+PKG_DIST_NAME = $(PKG_VERS).$(PKG_EXT)
+PKG_DIST_FILE = khronos-$(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
+PKG_DIST_SITE = https://github.com/KhronosGroup/glslang/archive/refs/tags
+PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
+
+HOMEPAGE = https://github.com/KhronosGroup/glslang
+COMMENT = An OpenGL GLSL and OpenGL|ES GLSL (ESSL) front-end for reference validation and translation of GLSL/ESSL into an internal abstract syntax tree (AST).
+LICENSE = Copyright (c) 2015-2024 The Khronos Group Inc.
+
+# Needs gcc >= 7.5: C++17 with std::filesystem (in libstdc++fs until gcc 9, linked below)
+MIN_GCC_VERSION = 7.5
+
+DEPENDS = cross/Khronos-SPIRV-Tools
+
+CONFIGURE_ARGS  = -DENABLE_OPT='OFF'
+CONFIGURE_ARGS += -DALLOW_EXTERNAL_SPIRV_TOOLS='ON'
+CONFIGURE_ARGS += -DBUILD_SHARED_LIBS='ON'
+CONFIGURE_ARGS += -DGLSLANG_TESTS='ON'
+
+include ../../mk/spksrc.common.mk
+
+# std::filesystem integration to libstdc++ >= GCC 9
+ifeq ($(call version_lt, $(TC_GCC), 9),1)
+CONFIGURE_ARGS += -DCMAKE_CXX_STANDARD_LIBRARIES=-lstdc++fs
+endif
+
+POST_EXTRACT_TARGET = glslang_post_extract_target
+
+include ../../mk/spksrc.cross-cmake.mk
+
+.PHONY: glslang_post_extract_target
+glslang_post_extract_target:
+	@cd $(WORK_DIR) && ln -s $(PKG_DIR) $(PKG_NAME)

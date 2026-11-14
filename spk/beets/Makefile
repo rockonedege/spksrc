@@ -1,29 +1,67 @@
 SPK_NAME = beets
-SPK_VERS = 1.4.9
-SPK_REV = 5
+SPK_VERS = 2.5.1
+SPK_REV = 12
 SPK_ICON = src/beets.png
 
-PIP = $(WORK_DIR)/../../../native/python3/work-native/install/usr/local/bin/pip
-BUILD_DEPENDS = native/python3
+PYTHON_PACKAGE = python312
 
-WHEELS = src/requirements.txt
-SPK_DEPENDS = "python3>=3.7.7"
+WHEELS = src/requirements-crossenv.txt src/requirements-pure.txt
 
 MAINTAINER = ymartin59
-DESCRIPTION = "Beets is the media library management system for obsessive-compulsive music geeks. The purpose of beets is to get your music collection right once and for all. It catalogs your collection, automatically improving its metadata as it goes. It then provides a bouquet of tools for manipulating and accessing your music. Plugins not available due to lacking dependencies: AcousticBrainz Submit, Gmusic, ReplayGain."
+DESCRIPTION = Beets is the media library management system for obsessive music geeks. The purpose of beets is to get your music collection right once and for all. It catalogs your collection, automatically improving its metadata as it goes. It then provides a bouquet of tools for manipulating and accessing your music.
+
 DISPLAY_NAME = beets
+STARTABLE = no
+CHANGELOG = "1. Update beets to 2.5.1. <br/>2. Fix wheel build issue with lap."
 
-CHANGELOG = "1. Upgraded minimum version of python 3."
-
-HOMEPAGE   = http://beets.io/
-LICENSE    = GPL
+HOMEPAGE = https://beets.io/
+LICENSE  = MIT
 
 SERVICE_SETUP = src/service-setup.sh
-SPK_LINKS = /usr/local/bin/beet:env/bin/beet
 
-STARTABLE = no
+SPK_COMMANDS = env/bin/beet
+SPK_COMMANDS += bin/mp3gain
 
-# Pure Python package, make sure ARCH is not defined
-override ARCH=
+# NOTE: Built with support for the following plugins:
+# beatport, chroma, discogs, embedart, embyupdate, fetchart, kodiupdate, lastgenre, lastimport, lyrics, metasync, plexupdate, replaygain, scrub, sonosupdate.
 
-include ../../mk/spksrc.spk.mk
+# NOTE: Plugins not available due to lacking dependencies: AutoBPM.
+
+### dependencies for plugins:
+### -------------------------
+
+### plugin: metasync
+# [dbus-python]
+DEPENDS += python/dbus-python
+
+### plugin: sonosupdate
+# [lxml]
+DEPENDS += cross/libxml2
+DEPENDS += cross/libxslt
+
+### plugins: embedart, fetchart
+# [Pillow]
+DEPENDS += python/pillow
+
+### plugin: replaygain
+# [pycairo]
+DEPENDS += python/pycairo
+
+# [pygobject] - depends on [pycairo]
+DEPENDS += python/pygobject
+
+### plugin: replaygain
+DEPENDS += cross/mp3gain
+
+### -------------------------
+
+# [PyYAML]
+DEPENDS += cross/libyaml
+
+# [numpy]
+DEPENDS += python/numpy_1.26
+
+# [lap] - depends on [numpy]
+DEPENDS += python/lap
+
+include ../../mk/spksrc.spk-meta.mk

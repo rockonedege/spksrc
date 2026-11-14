@@ -1,0 +1,31 @@
+{
+  "webservice": {
+    "services": [
+      {
+        "service": "ariang",
+        "display_name": "AriaNg",
+        "type": "static",
+        "root": "ariang",
+        "icon": "app/images/ariang-{0}.png"
+      }
+    ],
+    "portals": [
+        {
+            "service": "ariang",
+            "name": "AriaNg",
+            "type": "alias",
+            "alias": "ariang",
+            "app": "com.synocommunity.packages.ariang"
+        }
+    ],
+    "pkg_dir_prepare": [
+      {
+        "source": "/var/packages/ariang/target/web",
+        "target": "ariang",
+        "mode": "0755",
+        "user": "sc-ariang",
+        "group": "http"
+      }
+    ]
+  }
+}

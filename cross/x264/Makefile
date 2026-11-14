@@ -1,53 +1,63 @@
 PKG_NAME = x264
-PKG_VERS = 20200702-stable
+PKG_VERS = 20250608-stable
 PKG_EXT = tar.gz
-PKG_DOWNLOAD_METHOD = git
-PKG_GIT_HASH = 4c2aafd864dd201832ec2be0fef4484925146650
-PKG_DIST_SITE = https://github.com/mirror/x264.git
+PKG_GIT_HASH = 0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee
+PKG_DIST_NAME = $(PKG_NAME)-master.$(PKG_EXT)
+PKG_DIST_SITE = https://code.videolan.org/videolan/x264/-/archive/$(PKG_GIT_HASH)
 PKG_DIST_FILE = $(PKG_NAME)-git$(PKG_GIT_HASH).$(PKG_EXT)
-PKG_DIR = $(PKG_NAME)-git$(PKG_GIT_HASH)
+PKG_DIR = $(PKG_NAME)-$(PKG_GIT_HASH)
 
 DEPENDS =
-OPTIONAL_DEPENDS = native/nasm
 
-HOMEPAGE = http://www.videolan.org/developers/x264.html
+HOMEPAGE = https://www.videolan.org/developers/x264.html
 COMMENT  = x264 is a free software library and application for encoding video streams into the H.264/MPEG-4 AVC forma
 LICENSE  = GPLv2
 
+# Needs gcc >= 4.6: the configure endian probe trips -Werror=attributes under gcc 4.3.7.
+MIN_GCC_VERSION = 4.6
+
 GNU_CONFIGURE = 1
 
-# YASM_PATH = $(WORK_DIR)/../../../native/yasm/work-native/install/usr/local/bin
-NASM_PATH = $(WORK_DIR)/../../../native/nasm/work-native/install/usr/local/bin
-
-CONFIGURE_ARGS = --enable-shared --prefix=$(INSTALL_PREFIX) --enable-pic --cross-prefix=$(TC_PATH)$(TC_PREFIX)
+CONFIGURE_ARGS  = --enable-shared
+CONFIGURE_ARGS += --enable-pic
+CONFIGURE_ARGS += --disable-opencl
+CONFIGURE_ARGS += --prefix=$(INSTALL_PREFIX)
+# x264 reads every tool from the environment -- CC="${CC-${cross_prefix}gcc}" -- so each
+# follows whichever overlay provides it, and no --cross-prefix is needed.
+ENV += CC=$(call tc,gcc) AR=$(call tc,ar) NM=$(call tc,nm)
+ENV += RANLIB=$(call tc,ranlib) STRIP=$(call tc,strip)
 
 include ../../mk/spksrc.cross-cc.mk
 
-ifeq ($(findstring $(ARCH), $(ARM5_ARCHES) $(ARM7_ARCHES)),$(ARCH))
+ifeq ($(findstring $(ARCH),$(ARMv5_ARCHS) $(ARMv7_ARCHS) $(ARMv7L_ARCHS)),$(ARCH))
 ENV += x264_ARCH=ARM
 CONFIGURE_ARGS += --disable-asm
 endif
 
-ifeq ($(findstring $(ARCH), $(ARM8_ARCHES)),$(ARCH))
-ENV += x264_ARCH=aarch64
-CONFIGURE_ARGS += --disable-asm --host=arm-linux
+ifeq ($(findstring $(ARCH),$(ARMv8_ARCHS)),$(ARCH))
+ENV += x264_ARCH=ARM
+CONFIGURE_ARGS += --host=aarch64-linux
+# Expects to be assembled with a C compiler as frontend
+# .s is raw assembly passed to as
+# .S is assembly which expects to be preprocessed by a cpp then fed to assembler
+# More info: https://code.videolan.org/videolan/x264/-/issues/61
+ENV += AS=$(call tc,gcc)
 endif
 
-ifeq ($(findstring $(ARCH), $(PPC_ARCHES)),$(ARCH))
+ifeq ($(findstring $(ARCH),$(PPC_ARCHS)),$(ARCH))
 ENV += x264_ARCH=PPC
 CONFIGURE_ARGS += --disable-asm
 endif
 
-ifeq ($(findstring $(ARCH), $(x64_ARCHES)),$(ARCH))
-DEPENDS += native/nasm
-ENV += AS=$(NASM_PATH)/nasm
-ENV += PATH=$(NASM_PATH):$$PATH
+# Define x86asm
+ifeq ($(findstring $(ARCH),$(i686_ARCHS) $(x64_ARCHS)),$(ARCH))
+ENV += AS=$(shell which nasm)
+endif
+
+ifeq ($(findstring $(ARCH),$(x64_ARCHS)),$(ARCH))
 ENV += x264_ARCH=X86_64
 endif
 
-ifeq ($(findstring $(ARCH), $(x86_ARCHES)),$(ARCH))
-DEPENDS += native/nasm
-ENV += AS=$(NASM_PATH)/nasm
-ENV += PATH=$(NASM_PATH):$$PATH
+ifeq ($(findstring $(ARCH),$(i686_ARCHS)),$(ARCH))
 ENV += x264_ARCH=X86
 endif

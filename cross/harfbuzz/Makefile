@@ -1,0 +1,23 @@
+PKG_NAME = harfbuzz
+PKG_VERS = 14.5.1
+PKG_EXT = tar.xz
+PKG_DIST_NAME = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
+PKG_DIST_SITE = https://github.com/harfbuzz/harfbuzz/releases/download/$(PKG_VERS)
+PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
+
+DEPENDS = cross/freetype cross/glib cross/cairo cross/fontconfig
+
+# Needs gcc >= 4.8: C++11 features unavailable before gcc 4.8.
+MIN_GCC_VERSION = 4.8
+
+HOMEPAGE = https://harfbuzz.github.io/
+COMMENT  = HarfBuzz is a text shaping library. Using the HarfBuzz library allows programs to convert a sequence of Unicode input into properly formatted and positioned glyph output—for any writing system and language.
+LICENSE  = Old MIT
+
+CONFIGURE_ARGS = -Dtests=disabled
+CONFIGURE_ARGS += -Dutilities=disabled
+
+# let it find glib-mkenums
+ENV += "PATH=$(PATH):$(STAGING_INSTALL_PREFIX)/bin"
+
+include ../../mk/spksrc.cross-meson.mk

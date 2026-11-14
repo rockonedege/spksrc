@@ -1,0 +1,63 @@
+PKG_NAME = pngquant
+PKG_VERS = 3.0.3
+PKG_EXT = tar.gz
+PKG_DIST_NAME = $(PKG_VERS).$(PKG_EXT)
+PKG_DIST_SITE = https://github.com/kornelski/pngquant/archive
+PKG_DIST_FILE = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
+PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
+
+DEPENDS = cross/zlib
+# with zlib dependency, there is a linker error
+#DEPENDS += cross/libpng
+DEPENDS += cross/libimagequant-source
+
+HOMEPAGE = https://pngquant.org/
+COMMENT  = pngquant is a command-line utility and a library for lossy compression of PNG images.
+LICENSE  = GPL
+
+# "Fails on older gcc for its internal dependencies" (see the -std=c99 workaround below),
+# which is a compiler floor, not a property of these architectures.
+MIN_GCC_VERSION = 4.8
+
+include ../../mk/spksrc.common.mk
+
+# Fails on older gcc for its internal dependencies
+ifeq ($(call version_lt, $(TC_GCC), 5),1)
+ADDITIONAL_CFLAGS = -O3 -std=c99
+endif
+
+# Shadow host libpng-config with scripts/libpng-config: Debian/Ubuntu's
+# prints its "--libdir disabled" error to stdout, which libpng-sys
+# trusts as a -L path (it checks spawn success, not exit status).
+# The stub fails every probe the way an absent binary does, sending the
+# build down its normal pkg-config/static fallback on every host.
+ENV += PATH=$(BASEDIR)/cross/pngquant3/scripts:$(PATH)
+
+# Enforce specific crate versions
+POST_EXTRACT_TARGET = pngquant_post_extract
+CRATE_VERSION_LIBZSYS = 1.1.25
+CARGO_INSTALL_ARGS += --locked
+ifeq ($(findstring $(ARCH),$(PPC_ARCHS)),$(ARCH))
+CRATE_VERSION_JOBSERVER = 0.1.34
+endif
+
+include ../../mk/spksrc.cross-rust.mk
+
+# The archive of pngquant source does not contain libimagequant.
+# libimagequant is linked into pngquant source as git submodule.
+# Instead of creating a pngquant source package that includes the submodule,
+# we created a package cross/libimagequant-source that contains the source.
+# To build pngquant, we just have to link the source of libimagequant
+# into the pngquant source before building
+LIBIMAGEQUANT_SOURCE_FOLDER = $(dir $(wildcard $(WORK_DIR)/libimagequant-*/))
+SUBMODULE_FOLDER = $(WORK_DIR)/$(PKG_DIR)/lib
+
+.PHONY: pngquant_post_extract
+pngquant_post_extract:
+	@$(MSG) "Link libimagequant '$(LIBIMAGEQUANT_SOURCE_FOLDER)' into folder '$(SUBMODULE_FOLDER)'"
+	@rm -rf $(SUBMODULE_FOLDER)
+	@ln -sf $(LIBIMAGEQUANT_SOURCE_FOLDER) $(SUBMODULE_FOLDER)
+	@cd $(WORK_DIR)/$(PKG_DIR) && CARGO_HOME=$(CARGO_HOME) cargo update libz-sys --precise $(CRATE_VERSION_LIBZSYS)
+ifeq ($(findstring $(ARCH),$(PPC_ARCHS)),$(ARCH))
+	@cd $(WORK_DIR)/$(PKG_DIR) && CARGO_HOME=$(CARGO_HOME) cargo update jobserver --precise $(CRATE_VERSION_JOBSERVER)
+endif

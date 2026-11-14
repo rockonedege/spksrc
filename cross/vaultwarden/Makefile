@@ -1,0 +1,54 @@
+PKG_NAME = vaultwarden
+PKG_VERS = 1.37.4
+PKG_EXT = tar.gz
+PKG_DIST_NAME = $(PKG_VERS).$(PKG_EXT)
+PKG_DIST_SITE = https://github.com/dani-garcia/vaultwarden/archive
+PKG_DIST_FILE = $(PKG_NAME)-$(PKG_VERS).$(PKG_EXT)
+PKG_DIR = $(PKG_NAME)-$(PKG_VERS)
+
+DEPENDS = cross/openssl3 cross/mariadb-connector-c cross/libpq
+
+# rust edition 2024 required (see rust-version in Cargo.toml)
+MIN_RUSTC_VERSION = 1.97
+
+# issue with dependent component "libmimalloc-sys"
+# libmimalloc-sys includes stdatomic.h, which gcc ships from 4.9 on.
+MIN_GCC_VERSION = 4.9
+
+HOMEPAGE = https://github.com/dani-garcia/vaultwarden/wiki
+COMMENT = Alternative implementation of the Bitwarden server API written in Rust and compatible with upstream Bitwarden clients*, perfect for self-hosted deployment where running the official resource-heavy service might not be ideal.
+LICENSE = GPLv3
+
+CARGO_INSTALL_ARGS = --features sqlite,mysql,postgresql
+
+ENV += OPENSSL_DIR=$(STAGING_INSTALL_PREFIX)
+
+# mysqlclient-sys: to find libmysqlclient (mariadb-connector-c)
+ENV += MYSQLCLIENT_LIB_DIR=$(STAGING_INSTALL_PREFIX)/lib
+ENV += MYSQLCLIENT_INCLUDE_DIR=$(STAGING_INSTALL_PREFIX)/include/mariadb
+
+# let ./configure find mysql_config (it is a script and works for cross compile)
+ENV += "PATH=$(PATH):$(STAGING_INSTALL_PREFIX)/bin"
+
+# libpq: to find PostgreSQL client library
+ENV += PQ_LIB_DIR=$(STAGING_INSTALL_PREFIX)/lib
+
+# prevent reading version from local git repository:
+ENV += VW_VERSION="$(PKG_VERS) (SynoCommunity-$(ARCH))"
+
+include ../../mk/spksrc.common.mk
+
+ifeq ($(call version_lt, $(TC_GCC), 5),1)
+# fix for build of "libmimalloc-sys v0.1.30"
+ADDITIONAL_CFLAGS = -std=c99
+endif
+
+include ../../mk/spksrc.cross-rust.mk
+
+# pass mysql client version (needed by mysqlclient-sys crate)
+# Use same conditional as mariadb-connector-c to select correct version
+ifeq ($(call version_ge, $(TC_GCC), 5),1)
+ENV += MYSQLCLIENT_VERSION=$(shell sed -n 's/^PKG_VERS = //p' $(BASEDIR)/cross/mariadb-connector-c-latest/Makefile)
+else
+ENV += MYSQLCLIENT_VERSION=$(shell sed -n 's/^PKG_VERS = //p' $(BASEDIR)/cross/mariadb-connector-c-3.3.11/Makefile)
+endif

@@ -1,0 +1,14 @@
+# 
+# remove build date from full version
+# 
+--- autogen.sh
++++ autogen.sh
+@@ -39,7 +39,7 @@
+ MAJOR_RELEASE="7"
+ MINOR_RELEASE="0"
+ SHORT_VERSION="$MAJOR_RELEASE.$MINOR_RELEASE"
+-VERSION="$SHORT_VERSION.$TODAY"
++VERSION="$SHORT_VERSION"
+ 
+ if test -d ".git"; then
+ GIT_TAG=`git rev-parse HEAD`

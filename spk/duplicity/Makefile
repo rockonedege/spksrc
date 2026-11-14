@@ -1,29 +1,72 @@
 SPK_NAME = duplicity
-SPK_VERS = 0.7.19
-SPK_REV = 6
+SPK_VERS = 3.2.1
+SPK_REV = 14
 SPK_ICON = src/duplicity.png
 
-BUILD_DEPENDS = cross/python cross/setuptools cross/pip cross/wheel
-BUILD_DEPENDS += cross/$(SPK_NAME)
-DEPENDS = cross/librsync cross/bash cross/duply
-WHEELS = src/requirements.txt
+# The protobuf wheel includes stdatomic.h (upb/port/atomic.h), which gcc ships from 4.9 on.
+MIN_GCC_VERSION = 4.9
 
-SPK_DEPENDS = "python>=2.7.8-9:gnupg>=2.1.6-1"
+PYTHON_PACKAGE = python314
+SPK_DEPENDS = "gnupg>=2.1.6"
+WHEELS = src/requirements-crossenv.txt src/requirements-pure.txt
+
+DEPENDS = cross/librsync cross/duply
 
 MAINTAINER = SynoCommunity
-DESCRIPTION = Encrypted bandwidth-efficient backup using the rsync algorithm using a command line interface. Also contains duply wrapper script.
+DESCRIPTION = Encrypted bandwidth-efficient backup using the rsync algorithm. Also contains duply wrapper script (duply is supported only for DSM >= 6.0).
 STARTABLE = no
 DISPLAY_NAME = Duplicity
-CHANGELOG = Update to version 0.7.19
+CHANGELOG = "1. Update duplicity to v3.2.1 and duply to v2.5.6. <br/>2. Migrate to Python 3.14."
 
-HOMEPAGE = http://duplicity.nongnu.org/
-LICENSE  = GNU GPL v2
+HOMEPAGE = https://duplicity.gitlab.io/duplicity-web/
+LICENSE  = GPLv2
 
-INSTALLER_SCRIPT = src/installer.sh
-SSS_SCRIPT       = src/dsm-control.sh
+SERVICE_USER = auto
+SERVICE_SETUP = src/service-setup.sh
 
-INSTALL_PREFIX = /usr/local/$(SPK_NAME)
+# use alternate TMPDIR as /tmp might be too small.
+USE_ALTERNATE_TMPDIR = 1
 
-SPK_COMMANDS = "env/bin/duplicity share/duply/duply"
+SPK_COMMANDS = bin/duply bin/duplicity
 
-include ../../mk/spksrc.spk.mk
+SPK_USR_LOCAL_LINKS  = bin:env/bin/duplicity
+SPK_USR_LOCAL_LINKS += bin:bin/duply
+
+include ../../mk/spksrc.common.mk
+
+# [cryptography]
+DEPENDS += cross/openssl3
+
+# [lxml]
+DEPENDS += cross/libxml2
+DEPENDS += cross/libxslt
+ifeq ($(call version_lt, $(TC_GCC), 5.0),1)
+# Cython 3.1 atomics detection chokes GCC 4.x preprocessors; lxml runs
+# fine without them (non-atomic fallback).
+WHEELS_CFLAGS += [lxml] -std=c11 -DCYTHON_ATOMICS=0
+endif
+
+# [protobuf]
+ifeq ($(call version_lt, $(TC_GCC), 5.0),1)
+WHEELS_CPPFLAGS = [protobuf] -std=c11
+endif
+
+# [PyNaCl]
+DEPENDS += cross/libsodium
+ENV += SODIUM_INSTALL=system
+
+# [PyYAML]
+DEPENDS += cross/libyaml
+
+# [duplicity]
+#   - To be built last
+DEPENDS += python/duplicity
+
+POST_SERVICE_TARGET = duplicity_extra_install
+
+include ../../mk/spksrc.spk-meta.mk
+
+.PHONY: duplicity_extra_install
+duplicity_extra_install:
+	@$(MSG) Substituting PYTHON_PACKAGE in service-setup
+	@sed -i 's|@@PYTHON_PACKAGE@@|$(PYTHON_PACKAGE)|g' $(WORK_DIR)/scripts/service-setup

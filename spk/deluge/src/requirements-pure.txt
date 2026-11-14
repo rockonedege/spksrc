@@ -1,0 +1,20 @@
+attrs==26.1.0
+automat==25.4.16
+chardet==7.6.0
+constantly==23.10.4
+hyperlink==21.0.0
+idna==3.20
+ifaddr==0.2.0
+incremental==24.11.0
+mako==1.4.3
+#pip                      ==> python314
+pyasn1==0.6.4
+pyasn1_modules==0.4.2
+pycparser==3.0
+pygeoip==0.3.2            # optional peer country lookup, replaces GeoIP C binding
+pyopenssl==26.2.0         # version >= 26.3 requires cryptography >= 49.x
+pyxdg==0.28
+service_identity==26.1.0
+setuptools==81.0.0        # pinned version to fix #7115
+twisted==26.4.0
+typing_extensions==4.16.0
